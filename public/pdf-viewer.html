@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PDF Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #E8E6E1; }
+    #scroll {
+      width: 100%; height: 100vh;
+      overflow-y: auto;
+      overflow-x: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 12px;
+      gap: 12px;
+    }
+    canvas {
+      display: block;
+      box-shadow: 0 2px 16px rgba(0,0,0,.18);
+      background: #fff;
+      flex-shrink: 0;
+    }
+    #loading {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 12px;
+      background: #F4F3F0;
+      font-family: system-ui, sans-serif;
+      font-size: 14px; color: #6B6A64;
+      z-index: 10;
+    }
+    .spinner {
+      width: 32px; height: 32px; border-radius: 50%;
+      border: 3px solid #E2E0DA;
+      border-top-color: #C47F00;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="loading"><div class="spinner"></div><span>Chargement…</span></div>
+  <div id="scroll" style="display:none"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+    const params  = new URLSearchParams(location.search);
+    const fileUrl = params.get("file");
+    const DPR     = window.devicePixelRatio || 1;
+    const scroll  = document.getElementById("scroll");
+    const loading = document.getElementById("loading");
+
+    // zoom param: 100 = fit page width to screen, 200 = double that, etc.
+    const zoomPct = parseFloat(params.get("zoom") || "150");
+
+    let pdfDoc = null;
+
+    async function renderAll(scale) {
+      scroll.innerHTML = "";
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const page = await pdfDoc.getPage(i);
+        const vp   = page.getViewport({ scale: scale * DPR });
+        const canvas      = document.createElement("canvas");
+        canvas.width      = Math.floor(vp.width);
+        canvas.height     = Math.floor(vp.height);
+        // CSS size in logical px = sharp on HiDPI
+        canvas.style.width  = Math.floor(vp.width  / DPR) + "px";
+        canvas.style.height = Math.floor(vp.height / DPR) + "px";
+        scroll.appendChild(canvas);
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+      }
+    }
+
+    async function load() {
+      try {
+        pdfDoc = await pdfjsLib.getDocument(fileUrl).promise;
+        const page = await pdfDoc.getPage(1);
+        const vp1  = page.getViewport({ scale: 1 });
+        // fitScale: makes page exactly fill viewport width
+        const fitScale = (window.innerWidth - 24) / vp1.width;
+        // Apply zoom percentage on top
+        const finalScale = fitScale * (zoomPct / 100);
+        loading.style.display = "none";
+        scroll.style.display  = "flex";
+        await renderAll(finalScale);
+      } catch(e) {
+        loading.innerHTML =
+          `<span style="color:#C8250E;padding:20px;text-align:center">
+            Erreur : ${e.message}
+          </span>`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

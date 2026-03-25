@@ -1,0 +1,29 @@
+/*
+ * globals.css
+ * ─────────────────────────────────────────────────────────────
+ * Minimal global reset. Everything else is inline in components.
+ * ─────────────────────────────────────────────────────────────
+ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  background: #F4F3F0;                      /* matches C.bg in tokens.ts   */
+  font-family: var(--f-sans, sans-serif);   /* DM Sans from layout.tsx      */
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;                /* prevents pull-to-refresh jank */
+}
+
+/* ── Dark mode via data-theme attribute ── */
+[data-theme="dark"] {
+  background: #0F0F10;
+  color: #F0EFEC;
+}
+
+[data-theme="dark"] body {
+  background: #0F0F10;
+}
