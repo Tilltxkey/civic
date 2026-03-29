@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { UserProfile } from "./AuthFlow";
-import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, type DBPost, type DBComment } from "./db";
+import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushLocalNotif, type DBPost, type DBComment } from "./db";
 import { MessagesScreen } from "./MessagesTab";
 import { useC } from "./tokens";
 import { useLang } from "./LangContext";
@@ -681,6 +681,12 @@ function InlineCompose({ me, profilePic = null, onPost }: {
 
         {/* Right side */}
         <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Name + badge + tag */}
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{me.name}</span>
+            {me.badge && <VerifiedBadge type={me.badge} size={13} />}
+            <span style={{ fontSize: 12, color: C.sub }}>{me.tag}</span>
+          </div>
           <textarea
             ref={textRef}
             value={text}
@@ -970,7 +976,23 @@ function buildAuthorTag(u: UserProfile): string {
 
 export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setTab: (t: "all"|"mine") => void; user?: import("./AuthFlow").UserProfile | null }) {
   const C = useC();
+  const { user: ctxUser } = useProfile();
+  // Use both sources — ctxUser updates after UserSync, user prop may arrive first
+  const myId = ctxUser?.id ?? user?.id ?? "";
   const [showMessages, setShowMessages] = useState(false);
+  const [unread, setUnread] = useState(0);
+
+  useEffect(() => {
+    if (!myId) return;
+    const refresh = () =>
+      loadConversations(myId).then(rows => {
+        setUnread(rows.reduce((s, r) => s + (r.user_a === myId ? r.unread_a : r.unread_b), 0));
+      });
+    refresh();
+    const unsub = subscribeConversations(myId, refresh);
+    return unsub;
+  }, [myId]); // re-runs whenever myId resolves from "" to the real id
+
   return (
     <>
       {showMessages && <MessagesScreen onClose={() => setShowMessages(false)} />}
@@ -981,7 +1003,7 @@ export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setT
             <div style={{ fontSize: 11, color: C.sub, marginTop: 1, marginBottom: 8 }}>Trouvez vos partenaires, co-fondateurs, collaborateurs</div>
           </div>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            <div onClick={() => setShowMessages(true)}><DMIcon count={2} /></div>
+            <div onClick={() => setShowMessages(true)}><DMIcon count={unread} /></div>
             <AppMenu user={user} />
           </div>
         </div>
@@ -1102,6 +1124,29 @@ export function CommunityTab({ feedTab, currentUser }: { feedTab: "all" | "mine"
     }));
     insertComment(commentToDb(nc, postId));
     incrementCommentCount(postId);
+
+    // Nametag drop detection: find @handle mentions in the comment
+    const mentions = text.match(/@[\w\u00C0-\u024F]+/g) ?? [];
+    if (mentions.length > 0) {
+      // Find the post author to notify them if the mention matches their handle
+      const post = posts.find(p => p.id === postId);
+      if (post) {
+        for (const mention of mentions) {
+          // Notify the post author if someone @mentions them in a comment on their post
+          const normalised = mention.toLowerCase();
+          // Build expected handle for post author: @nom+prenom
+          const postAuthorHandle = `@${post.author.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"")}`;
+          if (normalised === postAuthorHandle && post.author.id !== ME_LIVE.id) {
+            pushLocalNotif(post.author.id, {
+              id:        `notif_${Date.now()}`,
+              body:      `${ME_LIVE.name} a mentionné votre profil ${mention} dans un commentaire`,
+              from:      ME_LIVE.id,
+              createdAt: now,
+            });
+          }
+        }
+      }
+    }
   };
 
   // View = first open of the detail screen per session per user
@@ -1170,23 +1215,21 @@ export function CommunityTab({ feedTab, currentUser }: { feedTab: "all" | "mine"
       ))}
       <div style={{ height: 80 }} />
 
-      {/* FAB — only on "mine" tab where inline compose is hidden */}
-      {feedTab === "mine" && (
-        <button onClick={() => setShowCompose(true)} style={{
-          position: "fixed", bottom: 78, right: 20,
-          width: 56, height: 56, borderRadius: "50%",
-          background: C.gold, border: "none", cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 4px 16px rgba(196,127,0,.45)", zIndex: 20,
-          WebkitTapHighlightColor: "transparent",
-          opacity: fabVisible ? 1 : 0,
-          transform: fabVisible ? "translateY(0) scale(1)" : "translateY(16px) scale(0.85)",
-          pointerEvents: fabVisible ? "auto" : "none",
-          transition: "opacity .22s ease, transform .22s ease",
-        }}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" strokeWidth="2.2" strokeLinecap="round"/></svg>
-        </button>
-      )}
+      {/* FAB — always visible */}
+      <button onClick={() => setShowCompose(true)} style={{
+        position: "fixed", bottom: 78, right: 20,
+        width: 56, height: 56, borderRadius: "50%",
+        background: C.gold, border: "none", cursor: "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        boxShadow: "0 4px 16px rgba(196,127,0,.45)", zIndex: 20,
+        WebkitTapHighlightColor: "transparent",
+        opacity: fabVisible ? 1 : 0,
+        transform: fabVisible ? "translateY(0) scale(1)" : "translateY(16px) scale(0.85)",
+        pointerEvents: fabVisible ? "auto" : "none",
+        transition: "opacity .22s ease, transform .22s ease",
+      }}>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" strokeWidth="2.2" strokeLinecap="round"/></svg>
+      </button>
     </div>
     </>
   );

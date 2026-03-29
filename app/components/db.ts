@@ -304,288 +304,183 @@ export async function incrementCommentCount(postId: string): Promise<void> {
     .update({ comment_count: current + 1 })
     .eq("id", postId);
 }
-// ── Elections ─────────────────────────────────────────────────
+// ── Messages ──────────────────────────────────────────────────
+// SQL to run in Supabase SQL Editor:
+//
+// CREATE TABLE civique_conversations (
+//   id        text PRIMARY KEY,
+//   created_at timestamptz DEFAULT now(),
+//   user_a    text REFERENCES civique_users(id),
+//   user_b    text REFERENCES civique_users(id),
+//   last_msg  text DEFAULT '',
+//   last_at   timestamptz DEFAULT now(),
+//   unread_a  int DEFAULT 0,
+//   unread_b  int DEFAULT 0
+// );
+// ALTER TABLE civique_conversations ENABLE ROW LEVEL SECURITY;
+// CREATE POLICY "public_all" ON civique_conversations FOR ALL USING (true) WITH CHECK (true);
+//
+// CREATE TABLE civique_messages (
+//   id              text PRIMARY KEY,
+//   created_at      timestamptz DEFAULT now(),
+//   conversation_id text REFERENCES civique_conversations(id) ON DELETE CASCADE,
+//   from_id         text REFERENCES civique_users(id),
+//   body            text NOT NULL DEFAULT ''
+// );
+// ALTER TABLE civique_messages ENABLE ROW LEVEL SECURITY;
+// CREATE POLICY "public_all" ON civique_messages FOR ALL USING (true) WITH CHECK (true);
+// ALTER PUBLICATION supabase_realtime ADD TABLE civique_messages;
+// ALTER PUBLICATION supabase_realtime ADD TABLE civique_conversations;
 
-export interface DBElection {
-  id:                  string;
-  created_at?:         string;
-  category_key:        string;
-  faculty:             string;
-  field:               string;
-  year:                number;
-  vacation:            string;
-  status:              "future" | "inscription" | "ongoing" | "past";
-  posts_scope:         "all" | "single";
-  selected_post:       string | null;
-  vote_order:          "together" | "sequential";
-  current_post_index:  number;
-  durations:           Record<string, number>; // { "Président·e du Comité Exécutif": 60, ... }
-  inscription_start:   string | null;
-  election_start:      string | null;
-  election_end:        string | null;
-  created_by:          string;
+export interface DBConversation {
+  id:       string;
+  user_a:   string;
+  user_b:   string;
+  last_msg: string;
+  last_at:  string;
+  unread_a: number;
+  unread_b: number;
 }
 
-export interface DBCandidate {
-  id:                 string;
-  created_at?:        string;
-  election_id:        string;
-  user_id:            string;
-  user_nom:           string;
-  user_prenom:        string;
-  user_tag:           string | null;
-  user_color:         string | null;
-  post:               string;
-  campaign_sentence:  string | null;
-  vote_count:         number;
-  temp_badge_active:  boolean;
+export interface DBMessage {
+  id:              string;
+  conversation_id: string;
+  from_id:         string;
+  body:            string;
+  created_at?:     string;
 }
 
-export interface DBVote {
-  id:           string;
-  created_at?:  string;
-  election_id:  string;
-  voter_id:     string;
-  candidate_id: string;
-  post:         string;
-}
-
-// ── Election CRUD ─────────────────────────────────────────────
-
-export async function getElectionByCategory(
-  categoryKey: string
-): Promise<DBElection | null> {
-  if (!DB_READY || !supabase) return null;
-  const { data, error } = await supabase
-    .from("civique_elections")
-    .select("*")
-    .eq("category_key", categoryKey)
-    .neq("status", "past")           // most recent non-past election
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) { console.error("getElectionByCategory:", error.message); return null; }
-  return data as DBElection | null;
-}
-
-export async function createElection(
-  data: Omit<DBElection, "created_at">
-): Promise<{ id: string; error: string | null }> {
-  if (!DB_READY || !supabase) return { id: data.id, error: null };
-  const { error } = await supabase.from("civique_elections").insert(data);
-  if (error) return { id: data.id, error: error.message };
-  return { id: data.id, error: null };
-}
-
-export async function updateElectionStatus(
-  id: string,
-  status: DBElection["status"],
-  extra: Partial<DBElection> = {}
-): Promise<void> {
-  if (!DB_READY || !supabase) return;
-  const { error } = await supabase
-    .from("civique_elections")
-    .update({ status, ...extra })
-    .eq("id", id);
-  if (error) console.error("updateElectionStatus:", error.message);
-}
-
-// ── Candidates ────────────────────────────────────────────────
-
-export async function getCandidates(electionId: string): Promise<DBCandidate[]> {
+export async function loadConversations(userId: string): Promise<DBConversation[]> {
   if (!DB_READY || !supabase) return [];
   const { data, error } = await supabase
-    .from("civique_candidates")
+    .from("civique_conversations")
     .select("*")
-    .eq("election_id", electionId)
-    .order("created_at", { ascending: true });
-  if (error) { console.error("getCandidates:", error.message); return []; }
-  return (data ?? []) as DBCandidate[];
+    .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+    .order("last_at", { ascending: false });
+  if (error) { console.error("loadConversations:", error.message); return []; }
+  return (data ?? []) as DBConversation[];
 }
 
-export async function createCandidate(
-  data: Omit<DBCandidate, "created_at" | "vote_count" | "temp_badge_active"> & { vote_count?: number; temp_badge_active?: boolean }
-): Promise<{ id: string; error: string | null }> {
-  if (!DB_READY || !supabase) return { id: data.id, error: null };
-  const row = { vote_count: 0, temp_badge_active: true, ...data };
-  const { error } = await supabase.from("civique_candidates").insert(row);
-  if (error) return { id: data.id, error: error.message };
-  return { id: data.id, error: null };
-}
-
-export async function getActiveCandidate(
-  userId: string,
-  electionId: string
-): Promise<DBCandidate | null> {
-  if (!DB_READY || !supabase) return null;
-  const { data, error } = await supabase
-    .from("civique_candidates")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("election_id", electionId)
-    .eq("temp_badge_active", true)
-    .maybeSingle();
-  if (error) { console.error("getActiveCandidate:", error.message); return null; }
-  return data as DBCandidate | null;
-}
-
-export async function deactivateCandidateBadges(electionId: string): Promise<void> {
-  if (!DB_READY || !supabase) return;
-  const { error } = await supabase
-    .from("civique_candidates")
-    .update({ temp_badge_active: false })
-    .eq("election_id", electionId);
-  if (error) console.error("deactivateCandidateBadges:", error.message);
-}
-
-// ── Votes ─────────────────────────────────────────────────────
-
-export async function castVote(
-  electionId: string,
-  voterId: string,
-  candidateId: string,
-  post: string
-): Promise<{ error: string | null }> {
-  if (!DB_READY || !supabase) return { error: null };
-  const id = `v${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const { error } = await supabase
-    .from("civique_votes")
-    .insert({ id, election_id: electionId, voter_id: voterId, candidate_id: candidateId, post });
-  if (error) {
-    // UNIQUE violation = already voted
-    if (error.code === "23505") return { error: "already_voted" };
-    return { error: error.message };
-  }
-  // Increment candidate vote_count
-  const { data: c } = await supabase
-    .from("civique_candidates")
-    .select("vote_count")
-    .eq("id", candidateId)
-    .maybeSingle();
-  await supabase
-    .from("civique_candidates")
-    .update({ vote_count: ((c?.vote_count as number) ?? 0) + 1 })
-    .eq("id", candidateId);
-  return { error: null };
-}
-
-export async function getVotesByElection(electionId: string): Promise<DBVote[]> {
-  if (!DB_READY || !supabase) return [];
-  const { data, error } = await supabase
-    .from("civique_votes")
-    .select("*")
-    .eq("election_id", electionId);
-  if (error) { console.error("getVotesByElection:", error.message); return []; }
-  return (data ?? []) as DBVote[];
-}
-
-export async function hasVoted(
-  electionId: string,
-  voterId: string,
-  post: string
-): Promise<boolean> {
-  if (!DB_READY || !supabase) return false;
+export async function findOrCreateConversation(userA: string, userB: string): Promise<string> {
+  if (!DB_READY || !supabase) return `local_${Date.now()}`;
   const { data } = await supabase
-    .from("civique_votes")
+    .from("civique_conversations")
     .select("id")
-    .eq("election_id", electionId)
-    .eq("voter_id", voterId)
-    .eq("post", post)
+    .or(`and(user_a.eq.${userA},user_b.eq.${userB}),and(user_a.eq.${userB},user_b.eq.${userA})`)
     .maybeSingle();
-  return !!data;
+  if (data?.id) return data.id;
+  const id = `conv_${Date.now()}`;
+  await supabase.from("civique_conversations").insert({
+    id, user_a: userA, user_b: userB,
+    last_msg: "", last_at: new Date().toISOString(), unread_a: 0, unread_b: 0,
+  });
+  return id;
+}
+
+export async function loadMessages(convId: string): Promise<DBMessage[]> {
+  if (!DB_READY || !supabase) return [];
+  const { data, error } = await supabase
+    .from("civique_messages")
+    .select("*")
+    .eq("conversation_id", convId)
+    .order("created_at", { ascending: true });
+  if (error) { console.error("loadMessages:", error.message); return []; }
+  return (data ?? []) as DBMessage[];
+}
+
+export async function sendMessage(msg: DBMessage): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  const { error } = await supabase.from("civique_messages").insert(msg);
+  if (error) console.error("sendMessage:", error.message);
+}
+
+export async function updateConvLastMsg(convId: string, lastMsg: string, senderId: string, userA: string): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  const isA = senderId === userA;
+  const { data } = await supabase.from("civique_conversations").select("unread_a,unread_b").eq("id", convId).maybeSingle();
+  await supabase.from("civique_conversations").update({
+    last_msg: lastMsg, last_at: new Date().toISOString(),
+    unread_a: isA ? (data?.unread_a ?? 0) : (data?.unread_a ?? 0) + 1,
+    unread_b: isA ? (data?.unread_b ?? 0) + 1 : (data?.unread_b ?? 0),
+  }).eq("id", convId);
+}
+
+export async function markConvRead(convId: string, userId: string, userA: string): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  await supabase.from("civique_conversations")
+    .update(userId === userA ? { unread_a: 0 } : { unread_b: 0 })
+    .eq("id", convId);
+}
+
+export async function loadAllUsers(): Promise<{ id: string; nom: string; prenom: string; faculty: string; year: number; role: string; avatar_color: string; badge: string | null; profile_photo: string | null }[]> {
+  if (!DB_READY || !supabase) return [];
+  const { data } = await supabase
+    .from("civique_users")
+    .select("id, nom, prenom, faculty, year, role, avatar_color, badge, profile_photo")
+    .order("nom", { ascending: true });
+  return (data ?? []) as any[];
+}
+
+export type RealtimeMessageEvent = { type: "INSERT" | "UPDATE" | "DELETE"; row: DBMessage };
+export type RealtimeConvoEvent   = { type: "INSERT" | "UPDATE" | "DELETE"; row: DBConversation };
+
+export function subscribeMessages(convId: string, cb: (e: RealtimeMessageEvent) => void): () => void {
+  if (!DB_READY || !supabase) return () => {};
+  const ch = supabase
+    .channel(`civique_msg_rt_${convId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "civique_messages", filter: `conversation_id=eq.${convId}` },
+      (p) => cb({ type: p.eventType as any, row: (p.new ?? p.old) as DBMessage }))
+    .subscribe();
+  return () => { supabase!.removeChannel(ch); };
+}
+
+export function subscribeConversations(userId: string, cb: (e: RealtimeConvoEvent) => void): () => void {
+  if (!DB_READY || !supabase) return () => {};
+  const ch = supabase
+    .channel(`civique_convos_rt_${userId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "civique_conversations" },
+      (p) => cb({ type: p.eventType as any, row: (p.new ?? p.old) as DBConversation }))
+    .subscribe();
+  return () => { supabase!.removeChannel(ch); };
+}
+
+// ── DM eligibility ────────────────────────────────────────────
+// A user can DM another only if:
+//   (a) the target has a public post still live, OR
+//   (b) the target dropped their @handle in a comment on one of the sender's posts
+
+export async function canDM(senderId: string, targetHandle: string, targetId: string): Promise<boolean> {
+  if (!DB_READY || !supabase) return true;
+  // (a) target has a live post where they explicitly dropped their own @handle in the body
+  const { data: posts } = await supabase
+    .from("civique_posts")
+    .select("body")
+    .eq("author_id", targetId);
+  if (posts?.some(p => p.body?.toLowerCase().includes(targetHandle.toLowerCase()))) return true;
+  // (b) target dropped their @handle in a comment on one of the sender's posts
+  const { data: comments } = await supabase
+    .from("civique_comments")
+    .select("body, post_id")
+    .eq("author_id", targetId);
+  if (comments) {
+    for (const c of comments) {
+      if (c.body?.toLowerCase().includes(targetHandle.toLowerCase())) {
+        const { data: post } = await supabase
+          .from("civique_posts").select("author_id").eq("id", c.post_id).maybeSingle();
+        if (post?.author_id === senderId) return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ── Notifications ─────────────────────────────────────────────
-
-export interface DBNotification {
-  id:         string;
-  type:       "new_candidate" | "election_open" | "election_results" | "badge_expired";
-  message:    string;
-  from_user:  string | null;
-  created_at: string;
-  read:       boolean;
-}
-
-export async function sendNotificationToCategory(
-  categoryKey: string,
-  notif: Omit<DBNotification, "id" | "created_at" | "read">
-): Promise<void> {
-  if (!DB_READY || !supabase) return;
-
-  // Build the notification object
-  const newNotif: DBNotification = {
-    id:         `n${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    created_at: new Date().toISOString(),
-    read:       false,
-    ...notif,
-  };
-
-  // Fetch all users in this category
-  const [faculty, field, yearStr, vacation] = categoryKey.split("::");
-  const { data: users, error } = await supabase
-    .from("civique_users")
-    .select("id, notifications")
-    .eq("faculty", faculty)
-    .eq("field", field)
-    .eq("year", parseInt(yearStr))
-    .eq("vacation", vacation);
-
-  if (error) { console.error("sendNotificationToCategory:", error.message); return; }
-
-  // Append notification to each user's jsonb array
-  for (const user of users ?? []) {
-    const current: DBNotification[] = Array.isArray(user.notifications) ? user.notifications : [];
-    await supabase
-      .from("civique_users")
-      .update({ notifications: [...current, newNotif] })
-      .eq("id", user.id);
-  }
-}
-
-export async function markNotificationsRead(
-  userId: string,
-  notifIds: string[] | "all"
-): Promise<void> {
-  if (!DB_READY || !supabase) return;
-  const { data: user } = await supabase
-    .from("civique_users")
-    .select("notifications")
-    .eq("id", userId)
-    .maybeSingle();
-  if (!user) return;
-  const current: DBNotification[] = Array.isArray(user.notifications) ? user.notifications : [];
-  const updated = current.map(n => ({
-    ...n,
-    read: notifIds === "all" ? true : notifIds.includes(n.id) ? true : n.read,
-  }));
-  await supabase.from("civique_users").update({ notifications: updated }).eq("id", userId);
-}
-
-export async function getNotifications(userId: string): Promise<DBNotification[]> {
-  if (!DB_READY || !supabase) return [];
-  const { data } = await supabase
-    .from("civique_users")
-    .select("notifications")
-    .eq("id", userId)
-    .maybeSingle();
-  const notifs: DBNotification[] = Array.isArray(data?.notifications) ? data.notifications : [];
-  return notifs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-}
-
-// ── Election realtime subscription ────────────────────────────
-
-export function subscribeElectionChanges(
-  categoryKey: string,
-  cb: (election: DBElection) => void
-): () => void {
-  if (!DB_READY || !supabase) return () => {};
-  const channel = supabase
-    .channel(`civique_election_${categoryKey.replace(/::/g, "_")}`)
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "civique_elections", filter: `category_key=eq.${categoryKey}` },
-      (payload) => { if (payload.new) cb(payload.new as DBElection); }
-    )
-    .subscribe();
-  return () => { supabase!.removeChannel(channel); };
+// Simple in-app notifications stored per user in localStorage.
+// No extra table needed.
+export function pushLocalNotif(userId: string, notif: { id: string; body: string; from: string; createdAt: string }): void {
+  try {
+    const key  = `civique_notifs_${userId}`;
+    const prev = JSON.parse(localStorage.getItem(key) ?? "[]");
+    localStorage.setItem(key, JSON.stringify([notif, ...prev].slice(0, 50)));
+  } catch {}
 }

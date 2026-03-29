@@ -902,6 +902,206 @@ export function ThesesHeader({ user }: { user?: import("./AuthFlow").UserProfile
   );
 }
 
+// ─── SEARCH ENGINE ───────────────────────────────────────────
+//
+// Pipeline:
+//  1. normalize()    – NFD accent-strip + lowercase  ("Éducation"→"education")
+//  2. tokenize()     – split on punctuation/spaces, drop French stop-words
+//  3. matchKind()    – per query-token × corpus-token precision ladder:
+//       EXACT   query token === corpus token           (highest)
+//       PREFIX  corpus token starts with query token   (e.g. "edu" → "education")
+//       INFIX   corpus token contains query token mid-word ("edu" → "réduction")
+//       NONE
+//     → EXACT and PREFIX are "word-boundary" hits; INFIX is a weak fallback.
+//  4. scoreThesis()  – accumulates per-field per-token scores:
+//       Title EXACT        +120  Title PREFIX        +60
+//       Author EXACT       +70   Author PREFIX       +35
+//       Title INFIX        +6    Author INFIX        +3
+//       Exact full-phrase  +150 (title) / +90 (author)
+//       All-tokens AND bonus +50 (title) / +25 (author)  — only for EXACT/PREFIX hits
+//       Favorite tie-break  +3
+//  5. Results sorted desc by score; score=0 hidden.
+//  6. buildSegments() produces highlight spans for rendering.
+
+// French stop-words — stripped from query tokens only
+const FR_STOP = new Set([
+  "le","la","les","de","du","des","un","une","et","en","au","aux",
+  "a","l","d","par","pour","sur","dans","avec","est","son","sa","ses",
+  "ce","cet","cette","ces","qui","que","qu","ou","si","ne","pas","plus",
+  "se","il","ils","elle","elles","y","on","nous","vous",
+]);
+
+/** NFD accent-strip + lowercase. "Éducation" → "education", "ô" → "o" */
+function normalize(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")   // strip combining diacritics
+    .toLowerCase()
+    .replace(/['']/g, " ");
+}
+
+/** Raw tokens from a normalized string — NO stop-word removal (used on corpus). */
+function rawTokens(s: string): string[] {
+  return normalize(s)
+    .split(/[\s\-–—:,;.!?()[\]/]+/)
+    .filter(w => w.length > 0);
+}
+
+/** Tokens from the user query — stop-words removed. */
+function queryTokens(s: string): string[] {
+  return rawTokens(s).filter(w => w.length > 1 && !FR_STOP.has(w));
+}
+
+type MatchKind = "exact" | "prefix" | "infix" | "none";
+
+/**
+ * Best match of a single query token against a list of corpus tokens.
+ * "exact"  — query === corpus token (full word match)
+ * "prefix" — corpus token starts with query  (e.g. "edu" → "education")
+ * "infix"  — corpus token contains query mid-word (e.g. "edu" → "reduction")
+ * "none"   — no match
+ */
+function bestMatch(qt: string, corpusTokens: string[]): MatchKind {
+  let best: MatchKind = "none";
+  for (const ct of corpusTokens) {
+    if (qt === ct)               { return "exact"; }
+    if (ct.startsWith(qt))       { best = "prefix"; continue; }
+    if (best !== "prefix" && ct.includes(qt)) { best = "infix"; }
+  }
+  return best;
+}
+
+interface SearchResult {
+  thesis:     Thesis;
+  score:      number;
+  titleSegs:  { text: string; hit: boolean }[];
+  authorSegs: { text: string; hit: boolean }[];
+}
+
+/**
+ * Split `text` into highlight segments using pre-normalized hit patterns.
+ */
+function buildSegments(
+  text: string,
+  hitTokens: string[],
+): { text: string; hit: boolean }[] {
+  if (!hitTokens.length) return [{ text, hit: false }];
+
+  const normText = normalize(text);
+  const ranges: [number, number][] = [];
+
+  for (const pat of hitTokens) {
+    let idx = 0;
+    while (true) {
+      const pos = normText.indexOf(pat, idx);
+      if (pos === -1) break;
+      ranges.push([pos, pos + pat.length]);
+      idx = pos + 1;
+    }
+  }
+  if (!ranges.length) return [{ text, hit: false }];
+
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const r of ranges) {
+    if (merged.length && r[0] <= merged[merged.length - 1][1]) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], r[1]);
+    } else {
+      merged.push([...r]);
+    }
+  }
+
+  const segs: { text: string; hit: boolean }[] = [];
+  let cur = 0;
+  for (const [s, e] of merged) {
+    if (s > cur) segs.push({ text: text.slice(cur, s), hit: false });
+    segs.push({ text: text.slice(s, e), hit: true });
+    cur = e;
+  }
+  if (cur < text.length) segs.push({ text: text.slice(cur), hit: false });
+  return segs;
+}
+
+function scoreThesis(th: Thesis, rawQuery: string): SearchResult {
+  const normTitle  = normalize(th.title);
+  const normAuthor = normalize(th.author);
+  const normQuery  = normalize(rawQuery.trim());
+  const qTokens    = queryTokens(rawQuery);
+  const tTokens    = rawTokens(th.title);
+  const aTokens    = rawTokens(th.author);
+
+  let score = 0;
+  const hitPatterns: string[] = [];
+
+  // ── 1. Full-phrase exact match (highest signal) ─────────────
+  if (normQuery.length > 1) {
+    if (normTitle.includes(normQuery))  { score += 150; hitPatterns.push(normQuery); }
+    if (normAuthor.includes(normQuery)) { score += 90;  hitPatterns.push(normQuery); }
+  }
+
+  // ── 2. Per query-token scoring via precision ladder ─────────
+  let allTitleBoundary  = qTokens.length > 0;
+  let allAuthorBoundary = qTokens.length > 0;
+
+  for (const qt of qTokens) {
+    const titleKind  = bestMatch(qt, tTokens);
+    const authorKind = bestMatch(qt, aTokens);
+
+    if      (titleKind === "exact")  { score += 120; hitPatterns.push(qt); }
+    else if (titleKind === "prefix") { score += 60;  hitPatterns.push(qt); }
+    else if (titleKind === "infix")  { score += 6;   hitPatterns.push(qt); }
+    else                             { allTitleBoundary = false; }
+
+    if (titleKind === "infix" || titleKind === "none") allTitleBoundary = false;
+
+    if      (authorKind === "exact")  { score += 70; hitPatterns.push(qt); }
+    else if (authorKind === "prefix") { score += 35; hitPatterns.push(qt); }
+    else if (authorKind === "infix")  { score += 3;  hitPatterns.push(qt); }
+    else                              { allAuthorBoundary = false; }
+
+    if (authorKind === "infix" || authorKind === "none") allAuthorBoundary = false;
+  }
+
+  // ── 3. AND bonus — every token matched at word boundary ─────
+  if (allTitleBoundary  && qTokens.length > 1) score += 50;
+  if (allAuthorBoundary && qTokens.length > 1) score += 25;
+
+  // ── 4. Favorite tie-break ────────────────────────────────────
+  if (th.favorite) score += 3;
+
+  const uniquePatterns = [...new Set(hitPatterns)].filter(p => p.length > 0);
+
+  return {
+    thesis:     th,
+    score,
+    titleSegs:  buildSegments(th.title,  uniquePatterns),
+    authorSegs: buildSegments(th.author, uniquePatterns),
+  };
+}
+
+/** Render a pre-segmented string with gold highlights on matched runs. */
+function HighlightText({
+  segs,
+  style,
+  hitStyle,
+}: {
+  segs:     { text: string; hit: boolean }[];
+  style:    React.CSSProperties;
+  hitStyle: React.CSSProperties;
+}) {
+  return (
+    <span style={style}>
+      {segs.map((s, i) =>
+        s.hit
+          ? <mark key={i} style={{ background: "transparent", ...hitStyle }}>{s.text}</mark>
+          : <span key={i}>{s.text}</span>
+      )}
+    </span>
+  );
+}
+
+// ─── THESES TAB ───────────────────────────────────────────────
+
 function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"vote"|"community") => void; onOpenThesis: (thesis: Thesis) => void }) {
   const C = useC();
   const { t } = useLang();
@@ -909,10 +1109,26 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
   const [theses, setTheses]         = useState(SAMPLE_THESES);
   const [focused, setFocused]       = useState(false);
 
-  const filtered = theses.filter(th =>
-    th.title.toLowerCase().includes(query.toLowerCase()) ||
-    th.author.toLowerCase().includes(query.toLowerCase())
-  );
+  // ── Ranked search ──────────────────────────────────────────
+  // Empty query → show all theses (favorites first), no highlights.
+  const results: SearchResult[] = React.useMemo(() => {
+    const q = query.trim();
+    if (!q) {
+      return theses
+        .slice()
+        .sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0))
+        .map(th => ({
+          thesis: th,
+          score:  0,
+          titleSegs:  [{ text: th.title,  hit: false }],
+          authorSegs: [{ text: th.author, hit: false }],
+        }));
+    }
+    return theses
+      .map(th => scoreThesis(th, q))
+      .filter(r => r.score > 0)
+      .sort((a, b) => b.score - a.score);
+  }, [query, theses]);
 
   const toggleFav = (id: number) =>
     setTheses(prev => prev.map(th => th.id === id ? { ...th, favorite: !th.favorite } : th));
@@ -963,12 +1179,12 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
 
       {/* ── List ── */}
       <div style={{ padding: "8px 0" }}>
-        {filtered.length === 0 && (
+        {results.length === 0 && query.trim().length > 0 && (
           <div style={{ textAlign: "center", padding: "48px 24px", color: C.dim, fontSize: 14 }}>
             Aucun résultat pour « {query} »
           </div>
         )}
-        {filtered.map((th, i) => (
+        {results.map(({ thesis: th, titleSegs, authorSegs }, i) => (
           <div key={th.id} onClick={() => onOpenThesis(th)} style={{
             display: "flex", gap: 14, alignItems: "flex-start",
             padding: "14px 16px",
@@ -992,10 +1208,16 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
 
             {/* Content */}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 15, color: C.text, lineHeight: 1.3, marginBottom: 4 }}>
-                {th.title}
-              </div>
-              <div style={{ fontSize: 12, color: C.sub }}>{th.author}</div>
+              <HighlightText
+                segs={titleSegs}
+                style={{ fontWeight: 600, fontSize: 15, color: C.text, lineHeight: 1.3, marginBottom: 4, display: "block" }}
+                hitStyle={{ color: C.gold, fontWeight: 700 }}
+              />
+              <HighlightText
+                segs={authorSegs}
+                style={{ fontSize: 12, color: C.sub, display: "block" }}
+                hitStyle={{ color: C.gold, fontWeight: 600 }}
+              />
             </div>
 
             {/* Right: date + star */}
