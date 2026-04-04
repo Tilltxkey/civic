@@ -25,6 +25,10 @@ import { AppMenu } from "./AppMenu";
 import PdfViewer from "./PdfViewer";
 import { useC } from "./tokens";
 import { Dept, deptStatus, CANDIDATE_A, CANDIDATE_B, ALL_RACES, AnyRace } from "./data";
+import { useElection, POSTS, isCEPRole, type PostId } from "./ElectionContext";
+import { candidateColor } from "./Race";
+import type { UserProfile } from "./AuthFlow";
+import { InscriptionSheet, LaunchElectionSheet, CandidacySheet, RealVoteSheet, ResetElectionSheet } from "./ElectionSheets";
 
 // How long (ms) the "success" sheet stays before auto-dismiss
 const DONE_DELAY = 5000;
@@ -476,27 +480,69 @@ function VoterButton({ onPress }: { onPress: () => void }) {
 }
 
 // ─── ALL RACES COMPONENT ─────────────────────────────────────
+// Driven entirely by real DB data from ElectionContext.
+// For each post in POSTS (importance order), shows real candidates
+// and real vote counts/percentages from allVotes + candidates.
 
 function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; onSelectRace: (id: string) => void }) {
   const C = useC();
   const { t } = useLang();
+  const { election, candidates, allVotes, winnerOfPost } = useElection();
+  const elStatus = election?.status ?? "future";
+  const isPast   = elStatus === "past";
+
+  // Build per-post real data from DB — supports unlimited candidates
+  const raceRows = POSTS
+    .filter(p => p.id !== selectedRaceId)
+    .map(post => {
+      const postCands = candidates
+        .filter(c => c.postId === post.id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+      const postVotes  = allVotes.filter(v => v.postId === post.id);
+      const totalVotes = postVotes.length;
+
+      const slots = postCands.map((cand, i) => ({
+        id:    cand.id,
+        name:  cand.userName,
+        votes: postVotes.filter(v => v.candidateId === cand.id).length,
+        pct:   totalVotes > 0 ? (postVotes.filter(v => v.candidateId === cand.id).length / totalVotes) * 100 : 0,
+        color: candidateColor(i),
+      }));
+
+      const winner    = isPast ? winnerOfPost(post.id) : null;
+      const pcts      = slots.map(s => s.pct);
+      const maxPct    = pcts.length > 1 ? Math.max(...pcts) : 0;
+      const secondPct = pcts.length > 1 ? [...pcts].sort((a,b) => b-a)[1] : 0;
+      const gap       = maxPct - secondPct;
+      const isClose   = elStatus === "ongoing" && totalVotes > 0 && gap < 2;
+      const isElected = isPast && !!winner;
+
+      return { post, slots, totalVotes, winner, isClose, isElected };
+    });
+
   return (
     <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 6px" }}>
 
-      {/* Section header */}
       <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: C.sub, marginBottom: 2 }}>
         {t("treemap.allRaces")}
       </div>
 
-      {[...ALL_RACES].sort((a, b) => a.importance - b.importance).filter(r => r.id !== selectedRaceId).map((race, i) => {
-        const [a, b] = race.candidates;
-        const leader = a.pct > b.pct ? a : b;
-        const isClose  = race.status === "close";
-        const isCall   = race.status === "call";
-        const isWatch  = race.status === "watch";
+      {raceRows.map(({ post, slots, totalVotes, winner, isClose, isElected }, i) => {
+        const hasVotes = totalVotes > 0;
+        const showPlaceholder = slots.length === 0;
+        const displaySlots = showPlaceholder
+          ? [
+              { id: "a", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(0) },
+              { id: "b", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(1) },
+            ]
+          : slots;
+
+        // Cumulative pct for segmented bar
+        let cumPct = 0;
 
         return (
-          <div key={i} onClick={() => onSelectRace(race.id)} style={{
+          <div key={post.id} onClick={() => onSelectRace(post.id)} style={{
             borderTop: i === 0 ? "none" : `1px solid ${C.border}`,
             padding: "12px 0 10px",
             cursor: "pointer",
@@ -505,98 +551,73 @@ function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; on
 
             {/* Role + status badge */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
-              <div style={{ fontWeight: 600, fontSize: 13, color: C.text }}>{race.role}</div>
-              {isCall && (
-                <div style={{
-                  fontSize: 8.5, fontWeight: 700, letterSpacing: "1px",
-                  border: `1px solid ${C.text}`, color: C.text,
-                  padding: "2px 6px", borderRadius: 3, flexShrink: 0,
-                  textTransform: "uppercase",
-                }}>
+              <div style={{ fontWeight: 600, fontSize: 13, color: C.text }}>{post.label}</div>
+              {isElected && (
+                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "1px", border: `1px solid ${C.text}`, color: C.text, padding: "2px 6px", borderRadius: 3, flexShrink: 0, textTransform: "uppercase" }}>
                   Résultat
                 </div>
               )}
               {isClose && (
-                <div style={{
-                  fontSize: 8.5, fontWeight: 700, letterSpacing: "1px",
-                  background: C.gold, color: "#fff",
-                  padding: "2px 6px", borderRadius: 3, flexShrink: 0,
-                  textTransform: "uppercase",
-                }}>
+                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "1px", background: C.gold, color: "#fff", padding: "2px 6px", borderRadius: 3, flexShrink: 0, textTransform: "uppercase" }}>
                   {t("treemap.tooClose")}
                 </div>
               )}
             </div>
 
-            {/* Candidates */}
-            {[a, b].map((c, ci) => {
-              const isWinner = race.winner === c.name;
-              const clr = c.color === "red" ? C.red : C.blue;
+            {/* Candidates — one row per candidate */}
+            {displaySlots.map((s, ci) => {
+              const isWinner = !!(winner && s.id === winner.id);
               return (
-                <div key={ci} style={{
-                  display: "flex", alignItems: "center",
-                  gap: 8, marginBottom: ci === 0 ? 5 : 0,
-                }}>
-                  {/* Dot */}
-                  <span style={{
-                    width: 7, height: 7, borderRadius: "50%",
-                    background: clr, flexShrink: 0,
-                    opacity: isWinner || !race.winner ? 1 : 0.35,
-                  }} />
-
-                  {/* Name */}
-                  <span style={{
-                    flex: 1, fontSize: 13,
-                    fontWeight: isWinner ? 600 : 400,
-                    color: isWinner ? C.text : C.sub,
-                    opacity: isWinner || !race.winner ? 1 : 0.5,
-                  }}>
-                    {c.name}
+                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: ci < displaySlots.length - 1 ? 5 : 0 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.color, flexShrink: 0, opacity: isWinner || !winner ? 1 : 0.35 }} />
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: isWinner ? 600 : 400, color: isWinner ? C.text : C.sub, opacity: isWinner || !winner ? 1 : 0.5 }}>
+                    {s.name}
                   </span>
-
-                  {/* Pct */}
-                  <span style={{
-                    fontFamily: "var(--f-mono)",
-                    fontSize: 13,
-                    fontWeight: isWinner ? 600 : 400,
-                    color: isWinner ? clr : C.sub,
-                    opacity: isWinner || !race.winner ? 1 : 0.5,
-                  }}>
-                    {c.pct.toFixed(1).replace(".", ",")} %
+                  <span style={{ fontFamily: "var(--f-mono)", fontSize: 13, fontWeight: isWinner ? 600 : 400, color: isWinner ? s.color : C.sub, opacity: isWinner || !winner ? 1 : 0.5 }}>
+                    {hasVotes ? `${s.pct.toFixed(1).replace(".", ",")} %` : "0,0 %"}
                   </span>
                 </div>
               );
             })}
 
-            {/* Progress bar */}
+            {/* Segmented bar */}
             <div style={{ height: 3, background: C.border, borderRadius: 99, overflow: "hidden", marginTop: 8, position: "relative" }}>
-              <div style={{
-                position: "absolute", left: 0, top: 0, height: "100%",
-                width: `${a.pct}%`,
-                background: a.color === "red" ? C.red : C.blue,
-                borderRadius: "99px 0 0 99px",
-                transition: "width 1s ease",
-              }} />
-              <div style={{
-                position: "absolute", right: 0, top: 0, height: "100%",
-                width: `${b.pct}%`,
-                background: isClose ? C.gold : (b.color === "blue" ? C.blue : C.red),
-                borderRadius: "0 99px 99px 0",
-                transition: "width 1s ease",
-              }} />
+              {hasVotes
+                ? displaySlots.map((s, si) => {
+                    const left = cumPct;
+                    cumPct += s.pct;
+                    return (
+                      <div key={s.id} style={{
+                        position: "absolute", left: `${left}%`, top: 0,
+                        height: "100%", width: `${s.pct}%`,
+                        background: isClose ? C.gold : s.color,
+                        borderRadius: si === 0 ? "99px 0 0 99px" : si === displaySlots.length - 1 ? "0 99px 99px 0" : "0",
+                        borderLeft: si > 0 ? `1px solid ${C.bg}` : "none",
+                        transition: "width 1s ease",
+                      }} />
+                    );
+                  })
+                : displaySlots.map((s, si) => (
+                    <div key={s.id} style={{
+                      position: "absolute",
+                      left: `${(si / displaySlots.length) * 100}%`,
+                      top: 0, height: "100%",
+                      width: `${100 / displaySlots.length}%`,
+                      background: s.color + "33",
+                      borderLeft: si > 0 ? `1px solid ${C.bg}` : "none",
+                    }} />
+                  ))
+              }
             </div>
 
-            {/* Footer: reporting + winner/watch */}
+            {/* Footer */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-              <span style={{ fontSize: 10, color: C.dim }}>{race.reporting} {t("treemap.reporting")}</span>
-              {isCall && race.winner && (
+              <span style={{ fontSize: 10, color: C.dim }}>
+                {totalVotes > 0 ? `${totalVotes} vote${totalVotes !== 1 ? "s" : ""}` : "Aucun vote"}
+              </span>
+              {isElected && winner && (
                 <span style={{ fontSize: 10, fontWeight: 700, color: C.text, letterSpacing: ".5px", textTransform: "uppercase" }}>
-                  {race.winner} {t("treemap.elected")}
-                </span>
-              )}
-              {isWatch && (
-                <span style={{ fontSize: 10, fontWeight: 600, color: C.gold, display: "flex", alignItems: "center", gap: 3 }}>
-                  <span style={{ fontSize: 9 }}>⚡</span> {t("treemap.watch")}
+                  {winner.userName} {t("treemap.elected")}
                 </span>
               )}
               {isClose && (
@@ -1250,54 +1271,152 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
   );
 }
 
+
 // ─── MAIN TREEMAP COMPONENT ──────────────────────────────────
 
 interface TreemapProps {
-  depts:          Dept[];
-  selectedRaceId: string;
-  onSelectRace:   (id: string) => void;
-  activeTab:      "results" | "vote" | "community";
-  onTabChange:    (tab: "results" | "vote" | "community") => void;
-  onOpenThesis:   (thesis: Thesis) => void;
+  depts:           Dept[];
+  selectedRaceId:  string;
+  onSelectRace:    (id: string) => void;
+  activeTab:       "results" | "vote" | "community";
+  onTabChange:     (tab: "results" | "vote" | "community") => void;
+  onOpenThesis:    (thesis: Thesis) => void;
+  currentUser?:    UserProfile | null;
+  onBadgeGranted?: () => void;
+  onGoToComm?:     (prefill: string) => void;
 }
 
 type FlowState = "idle" | "pick" | "confirm" | "done";
+type CepSheet  = "none" | "inscription" | "launch";
+type VoterSheet= "none" | "candidacy"  | "vote";
 
-const NAV_H = 62; // navbar height in px — keep in sync with navbar padding
+const NAV_H = 62;
 
-export default function Treemap({ depts, selectedRaceId, onSelectRace, activeTab, onTabChange, onOpenThesis }: TreemapProps) {
+// ─── SEX-BASED TREEMAP DATA ──────────────────────────────────
+// During ongoing elections, treemap groups by sex (Garçons/Filles).
+//
+// Cell SIZE  = number of people of that sex in the category (real population).
+// Cell SPLIT = proportion of that sex who voted red vs blue (real votes).
+//
+// So a cell visually answers:
+//   "Of all the boys/girls in this promo, how many voted? And who did they vote for?"
+
+interface SexGroup {
+  label:      string;
+  abbr:       string;
+  population: number;   // total qualified voters of this sex → drives cell size
+  votedPct:   number;   // % of this sex that has voted so far (participation)
+  totalVotes: number;   // total votes cast by this sex
+  // Per-candidate vote breakdown (parallel arrays, index = palette slot)
+  candVotes:  number[]; // raw votes per candidate within this sex
+  candPcts:   number[]; // % of this sex's votes per candidate
+  // Legacy 2-cand fields kept for backward compat
+  redPct:     number;
+  bluePct:    number;
+  redVotes:   number;
+  blueVotes:  number;
+}
+
+function buildSexGroups(
+  allVotes:   import("./ElectionContext").VoteRecord[],
+  candidates: import("./ElectionContext").CandidateRecord[],
+  postId:     PostId,
+  sexCounts:  { M: number; F: number },
+): SexGroup[] {
+  const postCands = candidates
+    .filter(c => c.postId === postId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  const postVotes  = allVotes.filter(v => v.postId === postId);
+  const totalVotes = postVotes.length;
+
+  // Votes per candidate globally
+  const votesPerCand = postCands.map(c => postVotes.filter(v => v.candidateId === c.id).length);
+
+  const mPop   = sexCounts.M || 1;
+  const fPop   = sexCounts.F || 1;
+  const mShare = mPop / (mPop + fPop);
+
+  // Distribute each candidate's votes proportionally by sex population share
+  // (best approximation until voter_sexe is stored in civique_votes)
+  const mVotesPerCand = votesPerCand.map(v => Math.round(v * mShare));
+  const fVotesPerCand = votesPerCand.map((v, i) => v - mVotesPerCand[i]);
+
+  const mTotalVotes = mVotesPerCand.reduce((s, n) => s + n, 0);
+  const fTotalVotes = fVotesPerCand.reduce((s, n) => s + n, 0);
+
+  const mCandPcts = mVotesPerCand.map(v => mTotalVotes > 0 ? (v / mTotalVotes) * 100 : 0);
+  const fCandPcts = fVotesPerCand.map(v => fTotalVotes > 0 ? (v / fTotalVotes) * 100 : 0);
+
+  const makeGroup = (
+    label: string, abbr: string, pop: number,
+    cVotes: number[], cPcts: number[], tv: number,
+  ): SexGroup => ({
+    label, abbr, population: pop,
+    votedPct:   (tv / pop) * 100,
+    totalVotes: tv,
+    candVotes:  cVotes,
+    candPcts:   cPcts,
+    // Legacy 2-cand compat
+    redPct:    cPcts[0] ?? 0,
+    bluePct:   cPcts[1] ?? 0,
+    redVotes:  cVotes[0] ?? 0,
+    blueVotes: cVotes[1] ?? 0,
+  });
+
+  return [
+    makeGroup("Garçons", "♂", mPop, mVotesPerCand, mCandPcts, mTotalVotes),
+    makeGroup("Filles",  "♀", fPop, fVotesPerCand, fCandPcts, fTotalVotes),
+  ];
+}
+
+export default function Treemap({
+  depts, selectedRaceId, onSelectRace, activeTab, onTabChange, onOpenThesis,
+  currentUser, onBadgeGranted, onGoToComm,
+}: TreemapProps) {
   const C = useC();
   const outerRef = useRef<HTMLDivElement>(null);
-  const [size, setSize]             = useState({ w: 0, h: 0 });
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
+  // Legacy local vote flow (used only when election status is NOT ongoing)
   const [flow, setFlow]             = useState<FlowState>("idle");
   const [votedRaces, setVotedRaces] = useState<Set<string>>(new Set());
   const [selected, setSelected]     = useState<string | null>(null);
   const [selectedColor, setSelectedColor] = useState(C.red);
   const [doneCountdown, setDoneCountdown] = useState(5);
-  const { t } = useLang();
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // User cancelled mid-flow (tapped backdrop) — close sheet, keep blur + button
+  // Election-aware sheet state
+  const [cepSheet,   setCepSheet]   = useState<CepSheet>("none");
+  const [voterSheet, setVoterSheet] = useState<VoterSheet>("none");
+  const [votePostId, setVotePostId] = useState<PostId>("president");
+
+  const { t } = useLang();
+  const {
+    election, isCEP, candidates, myVotes, allVotes, categorySexCounts,
+    candidatesForPost,
+  } = useElection();
+
+  const elStatus = election?.status ?? "future";
+  const isCepUser = currentUser ? isCEPRole(currentUser.role) : false;
+
+  // ── Legacy dismiss handlers (used when status is not "ongoing") ──
   const cancelDismiss = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     setFlow("idle");
     setSelected(null);
-    // hasVoted stays false → blur stays, button comes back
   }, []);
 
-  // User completed voting and hit Terminé — clear everything
   const completeDismiss = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     setFlow("idle");
     setSelected(null);
-    setVotedRaces(prev => new Set(prev).add(selectedRaceId)); // persist per race
+    setVotedRaces(prev => new Set(prev).add(selectedRaceId));
   }, [selectedRaceId]);
 
-  // Reset flow (not vote) when race changes — voted state persists per race
   useEffect(() => {
     setFlow("idle");
     setSelected(null);
-    // Double rAF: first frame lets React flush the DOM, second guarantees layout is complete
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (outerRef.current) {
         setSize({ w: Math.floor(outerRef.current.offsetWidth), h: Math.floor(outerRef.current.offsetHeight) });
@@ -1305,10 +1424,8 @@ export default function Treemap({ depts, selectedRaceId, onSelectRace, activeTab
     }));
   }, [selectedRaceId]);
 
-  // ResizeObserver — re-runs when activeTab changes so the ref is re-attached after tab switch
   useEffect(() => {
     if (activeTab !== "vote" && activeTab !== "community") return;
-    // rAF ensures the DOM node is mounted before we try to observe it
     const id = requestAnimationFrame(() => {
       if (!outerRef.current) return;
       const ro = new ResizeObserver(entries => {
@@ -1317,7 +1434,6 @@ export default function Treemap({ depts, selectedRaceId, onSelectRace, activeTab
       });
       ro.observe(outerRef.current);
       setSize({ w: Math.floor(outerRef.current.offsetWidth), h: Math.floor(outerRef.current.offsetHeight) });
-      // store disconnect fn on ref for cleanup
       (outerRef as any)._ro_disconnect = () => ro.disconnect();
     });
     return () => {
@@ -1326,7 +1442,6 @@ export default function Treemap({ depts, selectedRaceId, onSelectRace, activeTab
     };
   }, [activeTab]);
 
-  // Auto-dismiss countdown when on "done" step
   useEffect(() => {
     if (flow !== "done") return;
     setDoneCountdown(5);
@@ -1339,162 +1454,544 @@ export default function Treemap({ depts, selectedRaceId, onSelectRace, activeTab
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [flow, completeDismiss]);
 
-  // Derived race data — must come first, used by LEGEND and render
-  const activeRace  = ALL_RACES.find(r => r.id === selectedRaceId) ?? ALL_RACES[0];
+  const activeRace = ALL_RACES.find(r => r.id === selectedRaceId) ?? ALL_RACES[0];
 
-  // Layout
+  // ── Treemap layout ──────────────────────────────────────────
+  // For ongoing elections: group by sex (2 cells).
+  // Otherwise: use departments as usual.
   const GAP       = 4;
   const INNER_GAP = 2;
-  const total     = depts.reduce((s, d) => s + d.students, 0);
-  const items     = depts.map((d, index) => ({ value: d.students, index })).sort((a, b) => b.value - a.value);
+
+  const isOngoing = elStatus === "ongoing";
+  const activePostId = election?.activePostId ?? "president";
+  // Viewed post = what user selected; falls back to active post when ongoing
+  const viewedPostId = (isOngoing
+    ? (election?.openPosts?.includes(selectedRaceId as PostId) ? selectedRaceId : activePostId)
+    : selectedRaceId) as PostId;
+
+  // Build sex-based items for ongoing elections — for the VIEWED post
+  const sexGroups: SexGroup[] = isOngoing
+    ? buildSexGroups(allVotes, candidatesForPost(viewedPostId), viewedPostId, categorySexCounts)
+    : [];
+
+  const deptItems = depts.map((d, index) => ({ value: d.students, index })).sort((a, b) => b.value - a.value);
+  // Cell size = real population (M/F count), not vote count
+  const sexItems  = sexGroups.map((g, index) => ({ value: g.population, index }));
+
+  const total = isOngoing
+    ? sexGroups.reduce((s, g) => s + g.population, 0) || 1
+    : depts.reduce((s, d) => s + d.students, 0);
+
+  const items = isOngoing ? sexItems : deptItems;
   const rects: Rect[] = size.w > 0 && size.h > 0 ? squarify(items, 0, 0, size.w, size.h) : [];
 
-  const LEGEND = [
-    { color: C.red,  label: activeRace.candidates[0].name.split(" ")[1] },
-    { color: C.blue, label: activeRace.candidates[1].name.split(" ")[1] },
-    { color: C.gold, label: t("treemap.tooClose") },
-    { color: C.dim,  label: t("treemap.noResult") },
-  ];
+  // ── Legend ──────────────────────────────────────────────────
+  // For ongoing: show what red/blue mean + sex groups
+  const postCands = isOngoing
+    ? candidatesForPost(activePostId as PostId).sort((a,b) => a.createdAt.localeCompare(b.createdAt))
+    : [];
+  // Build legend from real candidates with palette colors
+  const legendCands = candidatesForPost(viewedPostId as PostId)
+    .slice()
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
-  // Blur only during the sheet flow
-  const hasVoted    = votedRaces.has(selectedRaceId);
-  const showOverlay = flow !== "idle";
-  const blurred     = showOverlay;
+  // For the default (non-ongoing) view, build legend from real candidates of the viewed post.
+  // Falls back to generic "Candidat A / B" when no one has registered yet.
+  const defaultLegendCands = candidatesForPost(viewedPostId as PostId)
+    .slice()
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  const LEGEND = isOngoing
+    ? [
+        ...legendCands.slice(0, 6).map((cand, i) => ({ color: candidateColor(i), label: cand.userName })),
+        ...(legendCands.length === 0 ? [{ color: candidateColor(0), label: "Aucun candidat" }] : []),
+        { color: C.dim + "44", label: "Non-votants" },
+      ]
+    : defaultLegendCands.length > 0
+    ? [
+        ...defaultLegendCands.slice(0, 6).map((cand, i) => ({ color: candidateColor(i), label: cand.userName })),
+        { color: C.gold, label: t("treemap.tooClose") },
+        { color: C.dim,  label: t("treemap.noResult") },
+      ]
+    : [
+        { color: candidateColor(0), label: "Candidat A" },
+        { color: candidateColor(1), label: "Candidat B" },
+        { color: C.gold, label: t("treemap.tooClose") },
+        { color: C.dim,  label: t("treemap.noResult") },
+      ];
+
+  // ── Voter button logic per election status ───────────────────
+  // future:      CEP → "Lancer les inscriptions"  | voter → nothing (blurred)
+  // inscription: CEP → "Commencer les élections"   | voter → "Être candidat·e"
+  // ongoing:     CEP → nothing (blurred/unblurred) | voter → "Voter"
+  // past:        everyone → unblurred, no button
+
+  const hasVotedLocal  = votedRaces.has(selectedRaceId);
+  const hasVotedReal   = isOngoing && myVotes.some(v => v.postId === (activePostId as PostId));
+  const showBlur       = elStatus === "future" || elStatus === "inscription"
+    ? (!isCepUser && !hasVotedLocal)
+    : elStatus === "ongoing"
+    ? !hasVotedReal
+    : false; // past → never blurred
+
+  const showOverlay    = flow !== "idle"; // legacy overlay
+
+  // Which CTA label and action to show inside the button overlay
+  const getCTAConfig = (): { label: string; icon: "ballot" | "candidate" | "launch" | "vote"; action: () => void } | null => {
+    if (elStatus === "past") {
+      if (isCepUser) return { label: "Nouveau scrutin", icon: "launch" as const, action: () => setCepSheet("reset") };
+      return null;
+    }
+    if (isCepUser) {
+      if (elStatus === "future")      return { label: "Inscrip.", icon: "launch",    action: () => setCepSheet("inscription") };
+      if (elStatus === "inscription") return { label: "Élections", icon: "launch",   action: () => setCepSheet("launch") };
+      return null; // CEP sees no button during ongoing
+    }
+    // Regular voter
+    if (elStatus === "future")      return null; // blurred, no button
+    if (elStatus === "inscription") return { label: "Candidat·e", icon: "candidate", action: () => setVoterSheet("candidacy") };
+    if (elStatus === "ongoing") {
+      if (hasVotedReal) return null;
+      return {
+        label: "Voter",
+        icon: "vote",
+        action: () => {
+          setVotePostId(activePostId as PostId);
+          setVoterSheet("vote");
+        },
+      };
+    }
+    return null;
+  };
+
+  const cta = getCTAConfig();
 
   return (
     <>
-      {/* Keyframes for sheet + +1 animation */}
       <style>{`
         @keyframes sheetUp  { from { transform: translateY(100%) } to { transform: translateY(0) } }
         @keyframes plusOne  { from { opacity: 0; transform: translateY(12px) scale(.8) } to { opacity: 1; transform: translateY(0) scale(1) } }
+        @keyframes checkPop { 0% { transform: scale(0); opacity: 0; } 60% { transform: scale(1.2); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
       `}</style>
 
       {/* ── TAB: Thèses ── */}
       {activeTab === "results" && <ThesesTab onTabChange={onTabChange} onOpenThesis={onOpenThesis} />}
 
-      {/* ── TAB: Voter (treemap + races) ── */}
+      {/* ── TAB: Voter ── */}
       {activeTab === "vote" && (
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 12px" }}>
+        <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 12px" }}>
 
-        {/* Section label */}
-        <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: C.sub, marginTop: 5, marginBottom: 10 }}>
-          {t("treemap.title")}
-        </div>
-
-        {/* Treemap canvas */}
-        <div style={{ position: "relative", width: "100%", paddingBottom: "85%" }}>
-
-          {/* White-wash overlay */}
-          {!hasVoted && (
-            <div style={{
-              position: "absolute", inset: 0,
-              borderRadius: 10,
-              background: `${C.bg}9E`,  // ~62% opacity, adapts to theme
-              zIndex: 4,
-              pointerEvents: "none",
-              transition: "opacity .3s ease",
-            }} />
-          )}
-
-          <div
-            ref={outerRef}
-            style={{
-              position: "absolute", inset: 0,
-              background: C.bg,
-              borderRadius: 10,
-              overflow: "hidden",
-              filter: hasVoted ? "none" : "blur(3px)",
-              transition: "filter .3s ease",
-            }}
-          >
-            {rects.map(rect => {
-              const dept   = depts[rect.index];
-              const status = deptStatus(dept);
-              const cx = rect.x + GAP / 2;
-              const cy = rect.y + GAP / 2;
-              const cw = rect.w - GAP;
-              const ch = rect.h - GAP;
-              if (cw <= 0 || ch <= 0) return null;
-              const redH  = status === "none" ? 0 : Math.round((dept.redPct / 100) * ch);
-              const blueH = ch - redH;
-              const rc    = status === "close" ? C.gold        : C.red;
-              const bc    = status === "close" ? C.gold + "55" : C.blue;
-              const minDim = Math.min(cw, ch);
-              const fs    = minDim < 40 ? 7 : minDim < 60 ? 8 : minDim < 90 ? 10 : 13;
-              const sh    = "0 1px 4px rgba(0,0,0,.85)";
-              const showAbbr  = cw > 20 && ch > 18;
-              const showSplit = cw > 36 && ch > 40 && dept.rep > 0;
-              const showRep   = cw > 52 && ch > 56 && dept.rep > 0;
-              const showName  = cw > 70 && ch > 70;
-              return (
-                <div key={dept.abbr} className="dept"
-                  title={`${dept.name} · ${dept.students.toLocaleString("fr-FR")} étudiants`}
-                  style={{ position: "absolute", left: cx, top: cy, width: cw, height: ch, overflow: "hidden", borderRadius: 4, cursor: "default", transition: "filter .2s" }}
-                >
-                  {status === "none" ? (
-                    <div style={{ width: "100%", height: "100%", background: C.none, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3 }}>
-                      {showAbbr && <div style={{ fontSize: fs, fontWeight: 600, color: C.dim }}>{dept.abbr}</div>}
-                      {showName && <div style={{ fontSize: Math.max(7, fs - 2), color: C.dim, opacity: .6 }}>{dept.name}</div>}
-                      <div style={{ fontSize: 9, color: C.dim }}>—</div>
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ position: "absolute", left: 0, top: 0, width: "100%", height: redH, background: rc, transition: "height .9s cubic-bezier(.4,0,.2,1)" }} />
-                      <div style={{ position: "absolute", left: 0, top: redH, width: "100%", height: blueH, background: bc, transition: "height .9s cubic-bezier(.4,0,.2,1)" }} />
-                      <div style={{ position: "absolute", left: 0, top: redH - INNER_GAP / 2, width: "100%", height: INNER_GAP, background: C.bg, zIndex: 2 }} />
-                      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, zIndex: 3, pointerEvents: "none" }}>
-                        {showAbbr  && <div style={{ fontSize: fs, fontWeight: 700, color: "#fff", textShadow: sh, letterSpacing: ".3px" }}>{dept.abbr}</div>}
-                        {showName  && <div style={{ fontSize: Math.max(7, fs - 3), color: "rgba(255,255,255,.65)", textShadow: sh }}>{dept.name}</div>}
-                        {showSplit && <div style={{ fontSize: Math.max(7, fs - 2), color: "rgba(255,255,255,.8)", textShadow: sh }}>{dept.redPct.toFixed(0)}·{(100 - dept.redPct).toFixed(0)}</div>}
-                        {showRep   && <div style={{ fontSize: Math.max(6, fs - 3), color: "rgba(255,255,255,.45)", textShadow: sh }}>{dept.rep.toFixed(0)}% dép.</div>}
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })}
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: C.sub, marginTop: 5, marginBottom: 10 }}>
+            {t("treemap.title")}
+            {isOngoing && election?.activePostId && (
+              <span style={{ marginLeft: 8, color: C.gold, fontWeight: 700 }}>
+                — {POSTS.find(p => p.id === election.activePostId)?.label}
+              </span>
+            )}
           </div>
 
-          {/* VOTER button */}
-          {flow === "idle" && !hasVoted && <VoterButton onPress={() => setFlow("pick")} />}
+          {/* Treemap canvas */}
+          <div style={{ position: "relative", width: "100%", paddingBottom: "85%" }}>
 
-          {/* Vote sheet */}
-          {showOverlay && (
-            <VoteSheet
-              step={flow as VoteStep}
-              selected={selected}
-              selectedColor={selectedColor}
-              raceId={selectedRaceId}
-              onSelect={(name, color) => { setSelected(name); setSelectedColor(color); }}
-              onContinue={() => { if (selected) setFlow("confirm"); }}
-              onConfirm={() => setFlow("done")}
-              onDismiss={completeDismiss}
-              onCancel={cancelDismiss}
-              onBack={() => setFlow("pick")}
-              countdown={doneCountdown}
-            />
+            {/* White-wash overlay */}
+            {showBlur && (
+              <div style={{
+                position: "absolute", inset: 0, borderRadius: 10,
+                background: `${C.bg}9E`, zIndex: 4,
+                pointerEvents: "none", transition: "opacity .3s ease",
+              }} />
+            )}
+
+            <div
+              ref={outerRef}
+              style={{
+                position: "absolute", inset: 0,
+                background: C.bg, borderRadius: 10, overflow: "hidden",
+                filter: showBlur ? "blur(3px)" : "none",
+                transition: "filter .3s ease",
+              }}
+            >
+              {/* ── ONGOING: sex-based cells ── */}
+              {/* Cell SIZE = population of that sex in the category                    */}
+              {/* Cell SPLIT = red (top) = % voted for red candidate                   */}
+              {/*              blue (bottom) = % voted for blue candidate               */}
+              {/* Unvoted portion shown as dimmed background (participation insight)    */}
+              {isOngoing && rects.map(rect => {
+                const group  = sexGroups[rect.index];
+                if (!group) return null;
+                const cx = rect.x + GAP / 2;
+                const cy = rect.y + GAP / 2;
+                const cw = rect.w - GAP;
+                const ch = rect.h - GAP;
+                if (cw <= 0 || ch <= 0) return null;
+
+                // Voted portion height — candidate strips live inside this
+                const votedH   = Math.round((group.votedPct / 100) * ch);
+                const unvotedH = ch - votedH;
+
+                const minDim = Math.min(cw, ch);
+                const fs     = minDim < 60 ? 10 : minDim < 100 ? 13 : 18;
+                const sh     = "0 1px 4px rgba(0,0,0,.85)";
+                const showLabel = cw > 40 && ch > 30;
+                const showPcts  = cw > 60 && ch > 50;
+                const showVotes = cw > 80 && ch > 70;
+
+                // Build N voted strips from top, then unvoted dim strip at bottom
+                // Each strip height ∝ (candPct / 100) * votedH
+                const nCands   = group.candVotes.length || 2;
+                const hasCands = nCands > 0 && group.totalVotes > 0;
+
+                // Cumulative top offsets for each candidate strip
+                let cumH = 0;
+                const strips = group.candPcts.map((pct, ci) => {
+                  const h   = hasCands ? Math.round((pct / 100) * votedH) : 0;
+                  const top = cumH;
+                  cumH     += h;
+                  return { h, top, color: candidateColor(ci), pct, votes: group.candVotes[ci] };
+                });
+                // Snap last strip so rounding doesn't leave a pixel gap
+                if (strips.length > 0 && hasCands) {
+                  const last = strips[strips.length - 1];
+                  last.h = votedH - (cumH - last.h);
+                }
+
+                const PAD = 3; // px padding inside cell for text
+
+                return (
+                  <div key={group.label} style={{
+                    position: "absolute", left: cx, top: cy, width: cw, height: ch,
+                    overflow: "hidden", borderRadius: 4,
+                    background: C.dim + "22",
+                  }}>
+
+                    {/* ── N candidate colour strips (stacked bar) ── */}
+                    {strips.map((strip, si) => (
+                      <div key={si} style={{
+                        position: "absolute", left: 0, top: strip.top,
+                        width: "100%", height: Math.max(0, strip.h),
+                        background: strip.color,
+                        transition: "height .9s cubic-bezier(.4,0,.2,1), top .9s cubic-bezier(.4,0,.2,1)",
+                      }}>
+                        {/* Per-strip % label — only if strip is tall enough */}
+                        {strip.h >= 14 && (
+                          <div style={{
+                            position: "absolute", inset: 0,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            fontSize: Math.max(8, Math.min(strip.h * 0.28, fs)),
+                            fontWeight: 700, color: "#fff",
+                            textShadow: sh, pointerEvents: "none",
+                            letterSpacing: ".3px",
+                          }}>
+                            {strip.pct >= 1 ? `${strip.pct.toFixed(0)}%` : ""}
+                          </div>
+                        )}
+                        {/* Thin separator between strips */}
+                        {si < strips.length - 1 && strip.h > 0 && (
+                          <div style={{
+                            position: "absolute", bottom: 0, left: 0,
+                            width: "100%", height: 1.5,
+                            background: C.bg, opacity: 0.6, zIndex: 2,
+                          }} />
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Unvoted dim strip at bottom */}
+                    <div style={{
+                      position: "absolute", left: 0, top: votedH,
+                      width: "100%", height: Math.max(0, unvotedH),
+                      background: C.dim + "44",
+                    }} />
+
+                    {/* ── Top row: M/F label left, population right ── */}
+                    {showLabel && (
+                      <div style={{
+                        position: "absolute", top: PAD, left: PAD, right: PAD,
+                        display: "flex", alignItems: "baseline",
+                        zIndex: 5, pointerEvents: "none",
+                      }}>
+                        <span style={{
+                          fontSize: Math.max(8, fs - 1), fontWeight: 700,
+                          color: "#fff", textShadow: sh, letterSpacing: ".5px",
+                        }}>
+                          {group.label === "Garçons" ? "M" : "F"} · {group.population}
+                        </span>
+
+                      </div>
+                    )}
+
+                    {/* ── Bottom row: votes dépouillés only ── */}
+                    {showVotes && group.totalVotes > 0 && (
+                      <div style={{
+                        position: "absolute", bottom: PAD, left: PAD, right: PAD,
+                        display: "flex", justifyContent: "flex-end",
+                        zIndex: 5, pointerEvents: "none",
+                      }}>
+                        <span style={{
+                          fontSize: Math.max(7, fs - 4), fontWeight: 400,
+                          color: "rgba(255,255,255,.5)", textShadow: sh,
+                          fontVariantNumeric: "tabular-nums",
+                        }}>
+                          {group.totalVotes}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* ── DEFAULT: department-based cells ── */}
+              {!isOngoing && rects.map(rect => {
+                const dept   = depts[rect.index];
+                if (!dept) return null;
+                const status = deptStatus(dept);
+                const cx = rect.x + GAP / 2;
+                const cy = rect.y + GAP / 2;
+                const cw = rect.w - GAP;
+                const ch = rect.h - GAP;
+                if (cw <= 0 || ch <= 0) return null;
+                const redH  = status === "none" ? 0 : Math.round((dept.redPct / 100) * ch);
+                const blueH = ch - redH;
+                const rc    = status === "close" ? C.gold        : C.red;
+                const bc    = status === "close" ? C.gold + "55" : C.blue;
+                const minDim = Math.min(cw, ch);
+                const fs    = minDim < 40 ? 7 : minDim < 60 ? 8 : minDim < 90 ? 10 : 13;
+                const sh    = "0 1px 4px rgba(0,0,0,.85)";
+                const showAbbr  = cw > 20 && ch > 18;
+                const showSplit = cw > 36 && ch > 40 && dept.rep > 0;
+                const showRep   = cw > 52 && ch > 56 && dept.rep > 0;
+                const showName  = cw > 70 && ch > 70;
+                return (
+                  <div key={dept.abbr} className="dept"
+                    title={`${dept.name} · ${dept.students.toLocaleString("fr-FR")} étudiants`}
+                    style={{ position: "absolute", left: cx, top: cy, width: cw, height: ch, overflow: "hidden", borderRadius: 4, cursor: "default", transition: "filter .2s" }}
+                  >
+                    {status === "none" ? (
+                      <div style={{ width: "100%", height: "100%", background: C.none, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3 }}>
+                        {showAbbr && <div style={{ fontSize: fs, fontWeight: 600, color: C.dim }}>{dept.abbr}</div>}
+                        {showName && <div style={{ fontSize: Math.max(7, fs - 2), color: C.dim, opacity: .6 }}>{dept.name}</div>}
+                        <div style={{ fontSize: 9, color: C.dim }}>—</div>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ position: "absolute", left: 0, top: 0, width: "100%", height: redH, background: rc, transition: "height .9s cubic-bezier(.4,0,.2,1)" }} />
+                        <div style={{ position: "absolute", left: 0, top: redH, width: "100%", height: blueH, background: bc, transition: "height .9s cubic-bezier(.4,0,.2,1)" }} />
+                        <div style={{ position: "absolute", left: 0, top: redH - INNER_GAP / 2, width: "100%", height: INNER_GAP, background: C.bg, zIndex: 2 }} />
+                        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, zIndex: 3, pointerEvents: "none" }}>
+                          {showAbbr  && <div style={{ fontSize: fs, fontWeight: 700, color: "#fff", textShadow: sh, letterSpacing: ".3px" }}>{dept.abbr}</div>}
+                          {showName  && <div style={{ fontSize: Math.max(7, fs - 3), color: "rgba(255,255,255,.65)", textShadow: sh }}>{dept.name}</div>}
+                          {showSplit && <div style={{ fontSize: Math.max(7, fs - 2), color: "rgba(255,255,255,.8)", textShadow: sh }}>{dept.redPct.toFixed(0)}·{(100 - dept.redPct).toFixed(0)}</div>}
+                          {showRep   && <div style={{ fontSize: Math.max(6, fs - 3), color: "rgba(255,255,255,.45)", textShadow: sh }}>{dept.rep.toFixed(0)}% dép.</div>}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── CTA Button overlay ── */}
+            {cta && flow === "idle" && (
+              <ElectionCTAButton
+                label={cta.label}
+                icon={cta.icon}
+                onPress={cta.action}
+                color={isCepUser ? C.gold : elStatus === "inscription" ? C.gold : undefined}
+              />
+            )}
+
+            {/* ── Legacy vote sheet (future/inscription demo mode) ── */}
+            {showOverlay && !isOngoing && (
+              <VoteSheet
+                step={flow as VoteStep}
+                selected={selected}
+                selectedColor={selectedColor}
+                raceId={selectedRaceId}
+                onSelect={(name, color) => { setSelected(name); setSelectedColor(color); }}
+                onContinue={() => { if (selected) setFlow("confirm"); }}
+                onConfirm={() => setFlow("done")}
+                onDismiss={completeDismiss}
+                onCancel={cancelDismiss}
+                onBack={() => setFlow("pick")}
+                countdown={doneCountdown}
+              />
+            )}
+          </div>
+
+          {/* Legend */}
+          <div style={{ display: "flex", gap: 14, marginTop: 10, flexWrap: "wrap" }}>
+            {LEGEND.map(({ color, label }, i) => (
+              <span key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9.5, color: C.sub }}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: color, display: "inline-block", flexShrink: 0 }} />
+                {label}
+              </span>
+            ))}
+          </div>
+
+          {/* ── CEP: Nouveau scrutin button — only after election is closed ── */}
+          {isCepUser && elStatus === "past" && (
+            <button
+              onClick={() => setCepSheet("reset")}
+              style={{
+                marginTop: 14,
+                width: "100%",
+                padding: "13px",
+                borderRadius: 12,
+                border: `1.5px solid ${C.gold}`,
+                background: C.goldBg,
+                color: C.gold,
+                fontFamily: "var(--f-sans)",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer",
+                letterSpacing: ".3px",
+                WebkitTapHighlightColor: "transparent",
+              }}
+            >
+              Nouveau scrutin
+            </button>
           )}
         </div>
-
-        {/* Legend */}
-        <div style={{ display: "flex", gap: 14, marginTop: 10, flexWrap: "wrap" }}>
-          {LEGEND.map(({ color, label }, i) => (
-            <span key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9.5, color: C.sub }}>
-              <span style={{ width: 8, height: 8, borderRadius: 2, background: color, display: "inline-block", flexShrink: 0 }} />
-              {label}
-            </span>
-          ))}
-        </div>
-
-      </div>
-
       )}
 
       {/* ── All races (vote tab only) ── */}
       {activeTab === "vote" && <AllRaces selectedRaceId={selectedRaceId} onSelectRace={onSelectRace} />}
 
+      {/* ── CEP Sheets ── */}
+      {cepSheet === "inscription" && (
+        <InscriptionSheet onClose={() => setCepSheet("none")} />
+      )}
+      {cepSheet === "launch" && (
+        <LaunchElectionSheet onClose={() => setCepSheet("none")} />
+      )}
+      {cepSheet === "reset" && (
+        <ResetElectionSheet onClose={() => setCepSheet("none")} />
+      )}
 
+      {/* ── Voter Sheets ── */}
+      {voterSheet === "candidacy" && currentUser && (
+        <CandidacySheet
+          user={currentUser}
+          onClose={() => setVoterSheet("none")}
+          onBadgeGranted={() => { onBadgeGranted?.(); }}
+          onGoToComm={(prefill: string) => {
+            onGoToComm?.(prefill);
+            onTabChange("community");
+          }}
+        />
+      )}
+      {voterSheet === "vote" && currentUser && (
+        <RealVoteSheet
+          user={currentUser}
+          postId={votePostId}
+          onClose={() => setVoterSheet("none")}
+        />
+      )}
+    </>
+  );
+}
 
+// ─── ELECTION CTA BUTTON ─────────────────────────────────────
+// Replaces the old VoterButton with a context-aware version.
+
+function ElectionCTAButton({
+  label, icon, onPress, color,
+}: {
+  label:   string;
+  icon:    "ballot" | "candidate" | "launch" | "vote";
+  onPress: () => void;
+  color?:  string;
+}) {
+  const C     = useC();
+  const [pressed, setPressed] = useState(false);
+  const btnColor = color ?? C.text;
+
+  const handlePress = () => {
+    setPressed(true);
+    setTimeout(() => setPressed(false), 300);
+    onPress();
+  };
+
+  const IconMap = {
+    ballot: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <rect x="4" y="3" width="16" height="18" rx="2.5" fill={btnColor} opacity=".9"/>
+        <path d="M8 8.5h8M8 12h8M8 15.5h5" stroke={C.bg} strokeWidth="1.6" strokeLinecap="round"/>
+        <circle cx="17.5" cy="15.5" r="3.5" fill={C.bg}/>
+        <path d="M15.8 15.5l1.1 1.1 1.8-2" stroke={btnColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+    candidate: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="8" r="4" fill={btnColor} opacity=".8"/>
+        <path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" fill={btnColor} opacity=".6"/>
+        <circle cx="19" cy="5" r="3" fill={C.gold}/>
+        <path d="M17.5 5l1 1 2-2" stroke="#fff" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+    launch: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2L8 8H3l4 4-2 7 7-4 7 4-2-7 4-4h-5z" fill={btnColor} opacity=".85"/>
+      </svg>
+    ),
+    vote: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <rect x="4" y="3" width="16" height="18" rx="2.5" fill={btnColor} opacity=".9"/>
+        <path d="M8 8.5h8M8 12h8M8 15.5h5" stroke={C.bg} strokeWidth="1.6" strokeLinecap="round"/>
+        <circle cx="17.5" cy="15.5" r="3.5" fill={C.bg}/>
+        <path d="M15.8 15.5l1.1 1.1 1.8-2" stroke={btnColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+  };
+
+  return (
+    <>
+      <style>{`
+        @keyframes voterPulse  { 0% { transform:scale(1); opacity:.55; } 70% { transform:scale(2.6); opacity:0; } 100% { transform:scale(2.6); opacity:0; } }
+        @keyframes voterPulse2 { 0% { transform:scale(1); opacity:.3;  } 70% { transform:scale(2.0); opacity:0; } 100% { transform:scale(2.0); opacity:0; } }
+        @keyframes voterIn     { from { opacity:0; transform:scale(.82); } to { opacity:1; transform:scale(1); } }
+        @keyframes voterIconFloat { 0%,100% { transform:translateY(0px); } 50% { transform:translateY(-3px); } }
+        @keyframes voterPress  { 0% { transform:scale(1); } 40% { transform:scale(.93); } 100% { transform:scale(1); } }
+      `}</style>
+
+      <div style={{
+        position: "absolute", inset: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 5,
+        animation: "voterIn .5s cubic-bezier(.2,.8,.3,1) both",
+      }}>
+        {/* Pulse rings */}
+        <div style={{ position:"absolute", width:56, height:56, borderRadius:"50%", background:btnColor, opacity:0, animation:"voterPulse 2.2s ease-out infinite", pointerEvents:"none" }} />
+        <div style={{ position:"absolute", width:56, height:56, borderRadius:"50%", background:btnColor, opacity:0, animation:"voterPulse2 2.2s ease-out .7s infinite", pointerEvents:"none" }} />
+
+        <button
+          onClick={handlePress}
+          style={{
+            position:"relative",
+            display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+            gap:2, width:80, height:80, borderRadius:"50%",
+            border:`1.5px solid ${C.border}`,
+            background: C.surface,
+            cursor:"pointer", fontFamily:"var(--f-sans)",
+            backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)",
+            boxShadow:`0 0 0 1px ${C.border2}, 0 8px 32px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.14)`,
+            animation: pressed ? "voterPress .3s ease both" : "none",
+            transition:"box-shadow .2s ease, border-color .2s ease",
+            outline:"none", WebkitTapHighlightColor:"transparent",
+          }}
+        >
+          <div style={{ animation:"voterIconFloat 3s ease-in-out infinite", lineHeight:1 }}>
+            {IconMap[icon]}
+          </div>
+          <div style={{
+            fontSize:8, fontWeight:700, color:btnColor,
+            letterSpacing:"1px", textTransform:"uppercase", opacity:.9, lineHeight:1,
+            textAlign:"center", maxWidth:68,
+          }}>
+            {label}
+          </div>
+        </button>
+      </div>
     </>
   );
 }

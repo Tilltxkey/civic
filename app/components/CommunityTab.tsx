@@ -763,11 +763,11 @@ function InlineCompose({ me, profilePic = null, onPost }: {
   );
 }
 
-function ComposeModal({ onClose, onPost, me, profilePic = null }: { onClose: () => void; onPost: (text: string, imgs?: string[]) => void; me: Author; profilePic?: string | null }) {
+function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "" }: { onClose: () => void; onPost: (text: string, imgs?: string[]) => void; me: Author; profilePic?: string | null; initialText?: string }) {
   const C = useC();
   const { profilePic: ctxPic } = useProfile();
   const livePic = ctxPic ?? profilePic;
-  const [text, setText]               = useState("");
+  const [text, setText]               = useState(initialText);
   const [imgs, setImgs]               = useState<string[]>([]);
   const [showStickers, setShowStickers] = useState(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
@@ -1019,7 +1019,7 @@ export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setT
 
 // ── CommunityTab ──────────────────────────────────────────────
 
-export function CommunityTab({ feedTab, currentUser }: { feedTab: "all" | "mine"; currentUser?: UserProfile }) {
+export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, composePrefill = "", onComposeClosed }: { feedTab: "all" | "mine"; currentUser?: UserProfile; autoOpenCompose?: boolean; composePrefill?: string; onComposeClosed?: () => void }) {
   const C = useC();
   const { profilePic } = useProfile();
 
@@ -1041,7 +1041,8 @@ export function CommunityTab({ feedTab, currentUser }: { feedTab: "all" | "mine"
   const [posts, setPosts]             = useState<Post[]>([]);
   const [loading, setLoading]         = useState(true);
   const [photoCache, setPhotoCache]   = useState<Record<string, string>>({});
-  const [showCompose, setShowCompose] = useState(false);
+  const [showCompose, setShowCompose] = useState(autoOpenCompose);
+  const [composeDraft, setComposeDraft] = useState(composePrefill);
   // Per-session view guard: a post counts as viewed only once per session
   const viewedPosts = useRef<Set<string>>(new Set());
 
@@ -1188,7 +1189,7 @@ export function CommunityTab({ feedTab, currentUser }: { feedTab: "all" | "mine"
 
   return (
     <>
-    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} onClose={() => setShowCompose(false)} onPost={(text, imgs) => { addPost(text, imgs); setShowCompose(false); }} />}
+    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs) => { addPost(text, imgs); setShowCompose(false); setComposeDraft(""); }} />}
     <div onScroll={handleScroll} style={{ background: C.bg, minHeight: "100%", overflowY: "auto", height: "100%" }}>
 
       {/* Inline compose box — only on "all" tab */}

@@ -484,3 +484,8 @@ export function pushLocalNotif(userId: string, notif: { id: string; body: string
     localStorage.setItem(key, JSON.stringify([notif, ...prev].slice(0, 50)));
   } catch {}
 }
+// ── Update user badge ─────────────────────────────────────────
+export async function updateUserBadge(userId: string, badge: "gold" | "blue" | "gray" | null): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  await supabase.from("civique_users").update({ badge }).eq("id", userId);
+}
