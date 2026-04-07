@@ -230,13 +230,43 @@ function AppShell({
   // Overlay state — shown on election launch and between sequential posts.
   // overlayEndsAt = DB launch time + OVERLAY_SECS (same for all clients).
   const [overlay, setOverlay] = useState<{ label: string; overlayEndsAt: string } | null>(null);
-  const prevStatus = useRef<string>("future");
-  const prevPost   = useRef<string | null>(null);
+  const prevStatus    = useRef<string>("future");
+  const prevPost      = useRef<string | null>(null);
+  const lateJoinCheck = useRef(false); // runs once when election first loads
 
   const elStatus   = election?.status ?? "future";
   const isOngoing  = elStatus === "ongoing";
   const activePost = election?.activePostId ?? null;
   const elMode     = election?.mode ?? null;
+
+  // ── Late-join guard ───────────────────────────────────────────
+  // Fires once when election data arrives. If the election is already
+  // ongoing AND the overlay window hasn't elapsed yet, show the overlay
+  // immediately so late-joining users see the same countdown as everyone else.
+  useEffect(() => {
+    if (lateJoinCheck.current || !election) return; // only run once, only when data is ready
+    lateJoinCheck.current = true;
+    if (election.status !== "ongoing") return;
+
+    // Derive overlayEndsAt the same way the transition effect does:
+    // timer.endsAt − timer.durationSecs = the moment launch happened + OVERLAY_SECS.
+    const refTimer = election.timers.find(t => !!t.endsAt);
+    if (!refTimer?.endsAt) return;
+    const overlayEndsAt = new Date(
+      new Date(refTimer.endsAt).getTime() - refTimer.durationSecs * 1000
+    ).toISOString();
+
+    // Only show if the overlay window is still active (i.e. we're inside the 30s gap)
+    if (new Date(overlayEndsAt).getTime() > Date.now()) {
+      const label = election.mode === "sequentiel" && election.activePostId
+        ? `Prochain poste : ${POSTS.find(p => p.id === election.activePostId)?.label ?? ""}. Le vote commence dans quelques instants…`
+        : "Les élections vont commencer. Préparez-vous à voter !";
+      setOverlay({ label, overlayEndsAt });
+    }
+    // Sync prevStatus so the transition effect doesn't double-fire
+    prevStatus.current = "ongoing";
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [election]);
 
   // Detect election launch → show launch overlay.
   // overlayEndsAt is derived from the first active timer's endsAt minus its
