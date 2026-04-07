@@ -30,6 +30,12 @@ export const POSTS = [
   { id: "president",   label: "Président·e du Comité Exécutif",  importance: 5 },
 ] as const;
 export type PostId = typeof POSTS[number]["id"];
+// ── Overlay duration ─────────────────────────────────────────
+// How many seconds the pre-election / between-post countdown overlay
+// shows before voting actually begins. Election timers are pushed
+// forward by exactly this amount so the overlay never eats into
+// voting time — integrity is preserved for every client.
+export const OVERLAY_SECS = 30;
 export interface PostTimer {
   postId:       PostId;
   durationSecs: number;   // total seconds for this post's vote
@@ -290,7 +296,7 @@ export function ElectionProvider({
           }
           if (nextPost) {
             const nextTimer = el.timers.find(t => t.postId === nextPost!.id);
-            const newEndsAt = new Date(now + (nextTimer?.durationSecs ?? 3600) * 1000).toISOString();
+            const newEndsAt = new Date(now + (OVERLAY_SECS + (nextTimer?.durationSecs ?? 3600)) * 1000).toISOString();
             await supabase!.from("civique_elections").update({
               active_post_id: nextPost.id,
               timers: el.timers.map(t => t.postId === nextPost!.id ? { ...t, endsAt: newEndsAt } : t),
@@ -428,7 +434,9 @@ export function ElectionProvider({
     if (mode === "ensemble") {
       timersFinal = timers.map(t => ({
         ...t,
-        endsAt: new Date(now + t.durationSecs * 1000).toISOString(),
+        // Add OVERLAY_SECS so the overlay window doesn't eat into voting time.
+        // All clients show the overlay for OVERLAY_SECS, then the real vote clock starts.
+        endsAt: new Date(now + (OVERLAY_SECS + t.durationSecs) * 1000).toISOString(),
       }));
     } else {
       // Sequential: only first post with candidates gets endsAt; others get null
@@ -436,7 +444,8 @@ export function ElectionProvider({
       timersFinal = timers.map(t => ({
         ...t,
         endsAt: t.postId === firstWithCands?.id
-          ? new Date(now + t.durationSecs * 1000).toISOString()
+          // Add OVERLAY_SECS so the launch overlay doesn't eat into voting time.
+          ? new Date(now + (OVERLAY_SECS + t.durationSecs) * 1000).toISOString()
           : null,
       }));
     }

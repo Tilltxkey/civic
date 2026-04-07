@@ -59,7 +59,7 @@ import {
   ALL_RACES,
 } from "./components/data";
 import { useWindowWidth } from "./components/helpers";
-import { ElectionProvider, useElection, POSTS } from "./components/ElectionContext";
+import { ElectionProvider, useElection, POSTS, OVERLAY_SECS } from "./components/ElectionContext";
 import { C, BREAK }        from "./components/tokens";
 
 // ─── GLOBAL CSS ──────────────────────────────────────────────
@@ -102,97 +102,97 @@ const CSS = `
 // ─── PAGE ROOT ───────────────────────────────────────────────
 
 // ─── ELECTION COUNTDOWN OVERLAY ─────────────────────────────
-// DISABLED — big pre-election timer commented out for now.
 // Full-screen overlay shown on launch and between sequential posts.
-// Countdown is derived from the DB timer endsAt timestamp so every
-// client shows the same remaining time regardless of when they join.
+// The overlay lasts exactly OVERLAY_SECS seconds (imported from
+// ElectionContext). During this window the election timers are NOT
+// ticking — launchElection already pushed every endsAt forward by
+// OVERLAY_SECS so the overlay duration never eats into voting time.
+// All clients derive timing from the same DB timestamp, so they
+// stay in sync regardless of when they joined the session.
 
-// function ElectionCountdownOverlay({
-//   label,
-//   endsAt,   // ISO timestamp from DB — source of truth for all clients
-//   onDone,
-// }: {
-//   label:   string;
-//   endsAt:  string;
-//   onDone:  () => void;
-// }) {
-//   const C = useC();
-//   const { isDark } = useTheme();
-//
-//   const [secs, setSecs] = useState(() =>
-//     Math.max(0, Math.floor((new Date(endsAt).getTime() - Date.now()) / 1000))
-//   );
-//
-//   useEffect(() => {
-//     const calc = () => Math.max(0, Math.floor((new Date(endsAt).getTime() - Date.now()) / 1000));
-//     const s = calc();
-//     setSecs(s);
-//     if (s === 0) { setTimeout(onDone, 0); return; }
-//     const iv = setInterval(() => {
-//       const r = calc();
-//       setSecs(r);
-//       if (r === 0) { clearInterval(iv); setTimeout(onDone, 0); }
-//     }, 500);
-//     return () => clearInterval(iv);
-//   }, [endsAt, onDone]);
-//
-//   const pad = (n: number) => String(n).padStart(2, "0");
-//   const total = 30; // visual progress denominator
-//   const elapsed = Math.max(0, total - secs);
-//
-//   return (
-//     <div style={{
-//       position: "fixed", inset: 0, zIndex: 500,
-//       // Theme-aware: light = frosted white, dark = frosted dark
-//       background: isDark ? "rgba(0,0,0,.82)" : "rgba(255,255,255,.88)",
-//       backdropFilter: "blur(20px)",
-//       WebkitBackdropFilter: "blur(20px)",
-//       display: "flex", flexDirection: "column",
-//       alignItems: "center", justifyContent: "center",
-//       gap: 20, padding: "32px 24px",
-//       animation: "fadeup .35s ease both",
-//     }}>
-//
-//       {/* Big countdown number — gray, no gold */}
-//       <div style={{
-//         fontFamily: "var(--f-mono)",
-//         fontSize: "clamp(80px, 26vw, 140px)",
-//         fontWeight: 700,
-//         color: C.sub,
-//         lineHeight: 1,
-//         letterSpacing: "-6px",
-//         opacity: secs === 0 ? 0 : 1,
-//         transition: "opacity .3s",
-//       }}>
-//         {pad(Math.floor(secs / 60))}:{pad(secs % 60)}
-//       </div>
-//
-//       {/* Label */}
-//       <div style={{
-//         fontSize: 15, fontWeight: 500,
-//         color: C.dim,
-//         textAlign: "center", lineHeight: 1.6,
-//         maxWidth: 260,
-//       }}>
-//         {label}
-//       </div>
-//
-//       {/* Progress bar — sweeps left to right */}
-//       <div style={{
-//         position: "absolute", bottom: 0, left: 0, right: 0,
-//         height: 3, background: C.border,
-//       }}>
-//         <div style={{
-//           height: "100%",
-//           width: `${(elapsed / total) * 100}%`,
-//           background: C.sub,
-//           transition: "width .5s linear",
-//           borderRadius: "0 2px 2px 0",
-//         }} />
-//       </div>
-//     </div>
-//   );
-// }
+function ElectionCountdownOverlay({
+  label,
+  overlayEndsAt, // ISO timestamp = launch time + OVERLAY_SECS
+  onDone,
+}: {
+  label:          string;
+  overlayEndsAt:  string;
+  onDone:         () => void;
+}) {
+  const C = useC();
+  const { isDark } = useTheme();
+
+  const calc = () => Math.max(0, Math.floor((new Date(overlayEndsAt).getTime() - Date.now()) / 1000));
+  const [secs, setSecs] = useState(calc);
+
+  useEffect(() => {
+    const s = calc();
+    setSecs(s);
+    if (s === 0) { setTimeout(onDone, 0); return; }
+    const iv = setInterval(() => {
+      const r = calc();
+      setSecs(r);
+      if (r === 0) { clearInterval(iv); setTimeout(onDone, 0); }
+    }, 500);
+    return () => clearInterval(iv);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayEndsAt]);
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const elapsed = Math.max(0, OVERLAY_SECS - secs);
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 500,
+      background: isDark ? "rgba(0,0,0,.82)" : "rgba(255,255,255,.88)",
+      backdropFilter: "blur(20px)",
+      WebkitBackdropFilter: "blur(20px)",
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      gap: 20, padding: "32px 24px",
+      animation: "fadeup .35s ease both",
+    }}>
+
+      {/* Big countdown number */}
+      <div style={{
+        fontFamily: "var(--f-mono)",
+        fontSize: "clamp(80px, 26vw, 140px)",
+        fontWeight: 700,
+        color: C.sub,
+        lineHeight: 1,
+        letterSpacing: "-6px",
+        opacity: secs === 0 ? 0 : 1,
+        transition: "opacity .3s",
+      }}>
+        {pad(Math.floor(secs / 60))}:{pad(secs % 60)}
+      </div>
+
+      {/* Label */}
+      <div style={{
+        fontSize: 15, fontWeight: 500,
+        color: C.dim,
+        textAlign: "center", lineHeight: 1.6,
+        maxWidth: 260,
+      }}>
+        {label}
+      </div>
+
+      {/* Progress bar — sweeps left to right over OVERLAY_SECS */}
+      <div style={{
+        position: "absolute", bottom: 0, left: 0, right: 0,
+        height: 3, background: C.border,
+      }}>
+        <div style={{
+          height: "100%",
+          width: `${(elapsed / OVERLAY_SECS) * 100}%`,
+          background: C.sub,
+          transition: "width .5s linear",
+          borderRadius: "0 2px 2px 0",
+        }} />
+      </div>
+    </div>
+  );
+}
 
 // ─── APP SHELL ───────────────────────────────────────────────
 // Lives inside ElectionProvider so it can call useElection()
@@ -227,9 +227,9 @@ function AppShell({
   const [selectedRaceId, setSelectedRaceId] = useState<string>("president");
   const [userPicked, setUserPicked]         = useState(false);
 
-  // Overlay: { label, endsAt } or null
-  // DISABLED — big pre-election timer commented out for now.
-  // const [overlay, setOverlay] = useState<{ label: string; endsAt: string } | null>(null);
+  // Overlay state — shown on election launch and between sequential posts.
+  // overlayEndsAt = DB launch time + OVERLAY_SECS (same for all clients).
+  const [overlay, setOverlay] = useState<{ label: string; overlayEndsAt: string } | null>(null);
   const prevStatus = useRef<string>("future");
   const prevPost   = useRef<string | null>(null);
 
@@ -238,67 +238,66 @@ function AppShell({
   const activePost = election?.activePostId ?? null;
   const elMode     = election?.mode ?? null;
 
-  // Detect election launch → show launch overlay
-  // DISABLED — big pre-election timer commented out for now.
-  // useEffect(() => {
-  //   const prev = prevStatus.current;
-  //   prevStatus.current = elStatus;
-  //   if ((prev === "future" || prev === "inscription") && elStatus === "ongoing") {
-  //     const endsAt = new Date(Date.now() + 30000).toISOString();
-  //     setOverlay({ label: "Les élections vont commencer. Préparez-vous à voter !", endsAt });
-  //   }
-  //   if (elStatus === "future" || elStatus === "past") {
-  //     setOverlay(null);
-  //     setSelectedRaceId("president");
-  //     setUserPicked(false);
-  //   }
-  // }, [elStatus]);
+  // Detect election launch → show launch overlay.
+  // overlayEndsAt is derived from the first active timer's endsAt minus its
+  // durationSecs — that gives exactly the launch instant + OVERLAY_SECS,
+  // which is the same wall-clock moment for every client.
   useEffect(() => {
+    const prev = prevStatus.current;
+    prevStatus.current = elStatus;
+    if ((prev === "future" || prev === "inscription") && elStatus === "ongoing") {
+      // Derive overlayEndsAt from DB: earliest timer endsAt minus its durationSecs
+      // = the moment the CEP hit launch + OVERLAY_SECS. Consistent across clients.
+      const firstTimer = election?.timers.find(t => !!t.endsAt);
+      const overlayEndsAt = firstTimer?.endsAt
+        ? new Date(new Date(firstTimer.endsAt).getTime() - firstTimer.durationSecs * 1000).toISOString()
+        : new Date(Date.now() + OVERLAY_SECS * 1000).toISOString(); // fallback
+      setOverlay({ label: "Les élections vont commencer. Préparez-vous à voter !", overlayEndsAt });
+    }
     if (elStatus === "future" || elStatus === "past") {
+      setOverlay(null);
       setSelectedRaceId("president");
       setUserPicked(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elStatus]);
 
-  // Detect sequential post change → show transition overlay
-  // DISABLED — big pre-election timer commented out for now.
-  // useEffect(() => {
-  //   const prev = prevPost.current;
-  //   prevPost.current = activePost;
-  //   if (!isOngoing || !activePost) return;
-  //   if (prev !== null && prev !== activePost && elMode === "sequentiel") {
-  //     // All clients detect the DB change at roughly the same instant → same endsAt
-  //     const endsAt = new Date(Date.now() + 30000).toISOString();
-  //     const postLabel = POSTS.find(p => p.id === activePost)?.label ?? "";
-  //     setOverlay({ label: `Prochain poste : ${postLabel}. Le vote commence dans quelques instants…`, endsAt });
-  //   }
-  //   setSelectedRaceId(activePost);
-  //   setUserPicked(false);
-  // }, [isOngoing, activePost, elMode]);
+  // Detect sequential post change → show transition overlay.
+  // Same derivation: next post's endsAt minus its durationSecs = advance time + OVERLAY_SECS.
   useEffect(() => {
-    if (!isOngoing || !activePost) return;
+    const prev = prevPost.current;
     prevPost.current = activePost;
+    if (!isOngoing || !activePost) return;
+    if (prev !== null && prev !== activePost && elMode === "sequentiel") {
+      const nextTimer = election?.timers.find(t => t.postId === activePost && !!t.endsAt);
+      const overlayEndsAt = nextTimer?.endsAt
+        ? new Date(new Date(nextTimer.endsAt).getTime() - nextTimer.durationSecs * 1000).toISOString()
+        : new Date(Date.now() + OVERLAY_SECS * 1000).toISOString(); // fallback
+      const postLabel = POSTS.find(p => p.id === activePost)?.label ?? "";
+      setOverlay({ label: `Prochain poste : ${postLabel}. Le vote commence dans quelques instants…`, overlayEndsAt });
+    }
     setSelectedRaceId(activePost);
     setUserPicked(false);
-  }, [isOngoing, activePost]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOngoing, activePost, elMode]);
 
   const handleSelectRace = (id: string) => {
     setSelectedRaceId(id);
     setUserPicked(true);
   };
 
-  // const handleOverlayDone = useCallback(() => setOverlay(null), []);
+  const handleOverlayDone = useCallback(() => setOverlay(null), []);
 
   return (
     <>
-      {/* ── Full-screen countdown overlay — DISABLED for now ── */}
-      {/* {overlay && (
+      {/* ── Full-screen pre-election countdown overlay ── */}
+      {overlay && (
         <ElectionCountdownOverlay
           label={overlay.label}
-          endsAt={overlay.endsAt}
+          overlayEndsAt={overlay.overlayEndsAt}
           onDone={handleOverlayDone}
         />
-      )} */}
+      )}
 
       {/* Outer shell — fixed to viewport */}
       <div style={{ position: "fixed", inset: 0, display: "flex", flexDirection: "column" }}>
