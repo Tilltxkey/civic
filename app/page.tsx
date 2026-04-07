@@ -59,7 +59,7 @@ import {
   ALL_RACES,
 } from "./components/data";
 import { useWindowWidth } from "./components/helpers";
-import { ElectionProvider, useElection } from "./components/ElectionContext";
+import { ElectionProvider, useElection, POSTS } from "./components/ElectionContext";
 import { C, BREAK }        from "./components/tokens";
 
 // ─── GLOBAL CSS ──────────────────────────────────────────────
@@ -101,6 +101,99 @@ const CSS = `
 
 // ─── PAGE ROOT ───────────────────────────────────────────────
 
+// ─── ELECTION COUNTDOWN OVERLAY ─────────────────────────────
+// DISABLED — big pre-election timer commented out for now.
+// Full-screen overlay shown on launch and between sequential posts.
+// Countdown is derived from the DB timer endsAt timestamp so every
+// client shows the same remaining time regardless of when they join.
+
+// function ElectionCountdownOverlay({
+//   label,
+//   endsAt,   // ISO timestamp from DB — source of truth for all clients
+//   onDone,
+// }: {
+//   label:   string;
+//   endsAt:  string;
+//   onDone:  () => void;
+// }) {
+//   const C = useC();
+//   const { isDark } = useTheme();
+//
+//   const [secs, setSecs] = useState(() =>
+//     Math.max(0, Math.floor((new Date(endsAt).getTime() - Date.now()) / 1000))
+//   );
+//
+//   useEffect(() => {
+//     const calc = () => Math.max(0, Math.floor((new Date(endsAt).getTime() - Date.now()) / 1000));
+//     const s = calc();
+//     setSecs(s);
+//     if (s === 0) { setTimeout(onDone, 0); return; }
+//     const iv = setInterval(() => {
+//       const r = calc();
+//       setSecs(r);
+//       if (r === 0) { clearInterval(iv); setTimeout(onDone, 0); }
+//     }, 500);
+//     return () => clearInterval(iv);
+//   }, [endsAt, onDone]);
+//
+//   const pad = (n: number) => String(n).padStart(2, "0");
+//   const total = 30; // visual progress denominator
+//   const elapsed = Math.max(0, total - secs);
+//
+//   return (
+//     <div style={{
+//       position: "fixed", inset: 0, zIndex: 500,
+//       // Theme-aware: light = frosted white, dark = frosted dark
+//       background: isDark ? "rgba(0,0,0,.82)" : "rgba(255,255,255,.88)",
+//       backdropFilter: "blur(20px)",
+//       WebkitBackdropFilter: "blur(20px)",
+//       display: "flex", flexDirection: "column",
+//       alignItems: "center", justifyContent: "center",
+//       gap: 20, padding: "32px 24px",
+//       animation: "fadeup .35s ease both",
+//     }}>
+//
+//       {/* Big countdown number — gray, no gold */}
+//       <div style={{
+//         fontFamily: "var(--f-mono)",
+//         fontSize: "clamp(80px, 26vw, 140px)",
+//         fontWeight: 700,
+//         color: C.sub,
+//         lineHeight: 1,
+//         letterSpacing: "-6px",
+//         opacity: secs === 0 ? 0 : 1,
+//         transition: "opacity .3s",
+//       }}>
+//         {pad(Math.floor(secs / 60))}:{pad(secs % 60)}
+//       </div>
+//
+//       {/* Label */}
+//       <div style={{
+//         fontSize: 15, fontWeight: 500,
+//         color: C.dim,
+//         textAlign: "center", lineHeight: 1.6,
+//         maxWidth: 260,
+//       }}>
+//         {label}
+//       </div>
+//
+//       {/* Progress bar — sweeps left to right */}
+//       <div style={{
+//         position: "absolute", bottom: 0, left: 0, right: 0,
+//         height: 3, background: C.border,
+//       }}>
+//         <div style={{
+//           height: "100%",
+//           width: `${(elapsed / total) * 100}%`,
+//           background: C.sub,
+//           transition: "width .5s linear",
+//           borderRadius: "0 2px 2px 0",
+//         }} />
+//       </div>
+//     </div>
+//   );
+// }
+
 // ─── APP SHELL ───────────────────────────────────────────────
 // Lives inside ElectionProvider so it can call useElection()
 // and keep selectedRaceId in sync with the active post.
@@ -131,28 +224,35 @@ function AppShell({
   const { t } = useLang();
   const { election } = useElection();
 
-  // selectedRaceId: defaults to "president", auto-follows activePostId in sequential mode,
-  // and can be overridden by user clicking a race in AllRaces.
   const [selectedRaceId, setSelectedRaceId] = useState<string>("president");
-  const [userPicked, setUserPicked] = useState(false); // true when user manually selected a race
+  const [userPicked, setUserPicked]         = useState(false);
+
+  // Overlay: { label, endsAt } or null
+  // DISABLED — big pre-election timer commented out for now.
+  // const [overlay, setOverlay] = useState<{ label: string; endsAt: string } | null>(null);
+  const prevStatus = useRef<string>("future");
+  const prevPost   = useRef<string | null>(null);
 
   const elStatus   = election?.status ?? "future";
   const isOngoing  = elStatus === "ongoing";
   const activePost = election?.activePostId ?? null;
+  const elMode     = election?.mode ?? null;
 
-  // Auto-sync to activePostId when:
-  // 1. Election becomes ongoing → jump to active post
-  // 2. Active post changes (sequential advance) → follow it
-  // 3. Unless user has manually picked a different race
-  useEffect(() => {
-    if (!isOngoing || !activePost) return;
-    // Always follow the active post in sequential mode (l'un après l'autre)
-    // In ensemble mode, snap to activePost initially then let user browse freely
-    setSelectedRaceId(activePost);
-    setUserPicked(false);
-  }, [isOngoing, activePost]);
-
-  // When election ends or resets → go back to president
+  // Detect election launch → show launch overlay
+  // DISABLED — big pre-election timer commented out for now.
+  // useEffect(() => {
+  //   const prev = prevStatus.current;
+  //   prevStatus.current = elStatus;
+  //   if ((prev === "future" || prev === "inscription") && elStatus === "ongoing") {
+  //     const endsAt = new Date(Date.now() + 30000).toISOString();
+  //     setOverlay({ label: "Les élections vont commencer. Préparez-vous à voter !", endsAt });
+  //   }
+  //   if (elStatus === "future" || elStatus === "past") {
+  //     setOverlay(null);
+  //     setSelectedRaceId("president");
+  //     setUserPicked(false);
+  //   }
+  // }, [elStatus]);
   useEffect(() => {
     if (elStatus === "future" || elStatus === "past") {
       setSelectedRaceId("president");
@@ -160,13 +260,46 @@ function AppShell({
     }
   }, [elStatus]);
 
+  // Detect sequential post change → show transition overlay
+  // DISABLED — big pre-election timer commented out for now.
+  // useEffect(() => {
+  //   const prev = prevPost.current;
+  //   prevPost.current = activePost;
+  //   if (!isOngoing || !activePost) return;
+  //   if (prev !== null && prev !== activePost && elMode === "sequentiel") {
+  //     // All clients detect the DB change at roughly the same instant → same endsAt
+  //     const endsAt = new Date(Date.now() + 30000).toISOString();
+  //     const postLabel = POSTS.find(p => p.id === activePost)?.label ?? "";
+  //     setOverlay({ label: `Prochain poste : ${postLabel}. Le vote commence dans quelques instants…`, endsAt });
+  //   }
+  //   setSelectedRaceId(activePost);
+  //   setUserPicked(false);
+  // }, [isOngoing, activePost, elMode]);
+  useEffect(() => {
+    if (!isOngoing || !activePost) return;
+    prevPost.current = activePost;
+    setSelectedRaceId(activePost);
+    setUserPicked(false);
+  }, [isOngoing, activePost]);
+
   const handleSelectRace = (id: string) => {
     setSelectedRaceId(id);
     setUserPicked(true);
   };
 
+  // const handleOverlayDone = useCallback(() => setOverlay(null), []);
+
   return (
     <>
+      {/* ── Full-screen countdown overlay — DISABLED for now ── */}
+      {/* {overlay && (
+        <ElectionCountdownOverlay
+          label={overlay.label}
+          endsAt={overlay.endsAt}
+          onDone={handleOverlayDone}
+        />
+      )} */}
+
       {/* Outer shell — fixed to viewport */}
       <div style={{ position: "fixed", inset: 0, display: "flex", flexDirection: "column" }}>
 

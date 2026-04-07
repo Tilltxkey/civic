@@ -29,11 +29,11 @@ export const LIGHT = {
   green:   "#0b971e",
 } as const;
 
-// ─── DARK PALETTE ────────────────────────────────────────────
+// ─── DARK PALETTEs ────────────────────────────────────────────
 export const DARK = {
-  bg:      "#0F0F10",
-  surface: "#1A1A1C",
-  card:    "#222226",
+  bg:      "#0c0c0c",
+  surface: "#141414",
+  card:    "#2b2b2e",
   none:    "#2A2A2E",
   border:  "#2E2E32",
   border2: "#3E3E44",

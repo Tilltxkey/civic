@@ -1462,15 +1462,17 @@ export default function Treemap({
   const GAP       = 4;
   const INNER_GAP = 2;
 
-  const isOngoing = elStatus === "ongoing";
+  const isOngoing  = elStatus === "ongoing";
+  const isPastView = elStatus === "past";   // past also shows M/F cells with final results
   const activePostId = election?.activePostId ?? "president";
   // Viewed post = what user selected; falls back to active post when ongoing
   const viewedPostId = (isOngoing
     ? (election?.openPosts?.includes(selectedRaceId as PostId) ? selectedRaceId : activePostId)
     : selectedRaceId) as PostId;
 
-  // Build sex-based items for ongoing elections — for the VIEWED post
-  const sexGroups: SexGroup[] = isOngoing
+  // Build sex-based items for ongoing AND past elections — for the VIEWED post
+  const useSexCells = isOngoing || isPastView;
+  const sexGroups: SexGroup[] = useSexCells
     ? buildSexGroups(allVotes, candidatesForPost(viewedPostId), viewedPostId, categorySexCounts)
     : [];
 
@@ -1478,16 +1480,16 @@ export default function Treemap({
   // Cell size = real population (M/F count), not vote count
   const sexItems  = sexGroups.map((g, index) => ({ value: g.population, index }));
 
-  const total = isOngoing
+  const total = useSexCells
     ? sexGroups.reduce((s, g) => s + g.population, 0) || 1
     : depts.reduce((s, d) => s + d.students, 0);
 
-  const items = isOngoing ? sexItems : deptItems;
+  const items = useSexCells ? sexItems : deptItems;
   const rects: Rect[] = size.w > 0 && size.h > 0 ? squarify(items, 0, 0, size.w, size.h) : [];
 
   // ── Legend ──────────────────────────────────────────────────
   // For ongoing: show what red/blue mean + sex groups
-  const postCands = isOngoing
+  const postCands = useSexCells
     ? candidatesForPost(activePostId as PostId).sort((a,b) => a.createdAt.localeCompare(b.createdAt))
     : [];
   // Build legend from real candidates with palette colors
@@ -1501,11 +1503,11 @@ export default function Treemap({
     .slice()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
-  const LEGEND = isOngoing
+  const LEGEND = useSexCells
     ? [
         ...legendCands.slice(0, 6).map((cand, i) => ({ color: candidateColor(i), label: cand.userName })),
         ...(legendCands.length === 0 ? [{ color: candidateColor(0), label: "Aucun candidat" }] : []),
-        { color: C.dim + "44", label: "Non-votants" },
+        { color: C.dim + "44", label: isPastView ? "Abstention" : "Non-votants" },
       ]
     : defaultLegendCands.length > 0
     ? [
@@ -1616,7 +1618,7 @@ export default function Treemap({
               {/* Cell SPLIT = red (top) = % voted for red candidate                   */}
               {/*              blue (bottom) = % voted for blue candidate               */}
               {/* Unvoted portion shown as dimmed background (participation insight)    */}
-              {isOngoing && rects.map(rect => {
+              {useSexCells && rects.map(rect => {
                 const group  = sexGroups[rect.index];
                 if (!group) return null;
                 const cx = rect.x + GAP / 2;
@@ -1741,7 +1743,7 @@ export default function Treemap({
               })}
 
               {/* ── DEFAULT: department-based cells ── */}
-              {!isOngoing && rects.map(rect => {
+              {!useSexCells && rects.map(rect => {
                 const dept   = depts[rect.index];
                 if (!dept) return null;
                 const status = deptStatus(dept);

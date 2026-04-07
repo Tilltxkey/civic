@@ -467,7 +467,7 @@ export function LaunchElectionSheet({ onClose }: { onClose: () => void }) {
                 {
                   value: "sequentiel" as ElectionMode,
                   label: "L'un après l'autre",
-                  sub: "Président·e d'abord, puis les autres en ordre d'importance.",
+                  sub: "Du Responsable Affaires Académiques au Président·e, dans l'ordre d'importance.",
                 },
               ] as { value: ElectionMode; label: string; sub: string }[]).map(opt => {
                 const active = mode === opt.value;
