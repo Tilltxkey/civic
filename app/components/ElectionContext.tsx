@@ -19,6 +19,7 @@ import {
 } from "react";
 import { supabase, DB_READY } from "./supabase";
 import type { UserProfile } from "./AuthFlow";
+import { fetchUserPhotos } from "./db";
 // ─── TYPES ───────────────────────────────────────────────────
 export type ElectionStatus = "future" | "inscription" | "ongoing" | "past";
 export type ElectionMode   = "ensemble" | "sequentiel";
@@ -71,13 +72,14 @@ export interface ElectionRecord {
   updatedAt:     string;
 }
 interface ElectionCtx {
-  election:         ElectionRecord | null;
-  candidates:       CandidateRecord[];
-  myVotes:          VoteRecord[];       // votes cast by current user
-  allVotes:         VoteRecord[];       // ALL votes for the election (for real counts)
-  categorySexCounts: { M: number; F: number }; // how many M/F users in this category
-  isCEP:            boolean;
-  loading:          boolean;
+  election:          ElectionRecord | null;
+  candidates:        CandidateRecord[];
+  myVotes:           VoteRecord[];
+  allVotes:          VoteRecord[];
+  categorySexCounts: { M: number; F: number };
+  profilePhotos:     Record<string, string>; // userId → profile_photo URL
+  isCEP:             boolean;
+  loading:           boolean;
   // Actions
   launchInscription:  (posts: PostId[]) => Promise<void>;
   launchElection:     (posts: PostId[], mode: ElectionMode, timers: PostTimer[]) => Promise<void>;
@@ -104,7 +106,7 @@ function makeId(): string {
 }
 // ─── CONTEXT ────────────────────────────────────────────────
 const Ctx = createContext<ElectionCtx>({
-  election: null, candidates: [], myVotes: [], allVotes: [], categorySexCounts: { M: 0, F: 0 }, isCEP: false, loading: true,
+  election: null, candidates: [], myVotes: [], allVotes: [], categorySexCounts: { M: 0, F: 0 }, profilePhotos: {}, isCEP: false, loading: true,
   launchInscription: async () => {},
   launchElection:    async () => {},
   submitCandidacy:   async () => ({ error: null }),
@@ -130,6 +132,7 @@ export function ElectionProvider({
   const [myVotes,    setMyVotes]    = useState<VoteRecord[]>([]);
   const [allVotes,   setAllVotes]   = useState<VoteRecord[]>([]);
   const [categorySexCounts, setCategorySexCounts] = useState<{ M: number; F: number }>({ M: 0, F: 0 });
+  const [profilePhotos, setProfilePhotos] = useState<Record<string, string>>({});
   const [loading,    setLoading]    = useState(true);
   const category = user ? categoryOf(user) : null;
   const isCEP    = user ? isCEPRole(user.role) : false;
@@ -222,6 +225,14 @@ export function ElectionProvider({
     setLoading(false);
   }, [category, user]);
   useEffect(() => { fetchElection(); }, [fetchElection]);
+
+  // ── Fetch profile photos for all candidates ─────────────────
+  // Runs whenever the candidates list changes (new candidacy, election reset, etc.)
+  useEffect(() => {
+    if (candidates.length === 0) { setProfilePhotos({}); return; }
+    const ids = candidates.map(c => c.userId);
+    fetchUserPhotos(ids).then(photos => setProfilePhotos(photos));
+  }, [candidates]);
   // ── Realtime subscription on election row ───────────────────
   // We do NOT use a row-level filter on civique_elections because the
   // category value contains "|" which breaks Supabase realtime filter syntax.
@@ -589,7 +600,7 @@ export function ElectionProvider({
   }, [election]);
   return (
     <Ctx.Provider value={{
-      election, candidates, myVotes, allVotes, categorySexCounts, isCEP, loading,
+      election, candidates, myVotes, allVotes, categorySexCounts, profilePhotos, isCEP, loading,
       launchInscription, launchElection, submitCandidacy, castVote, resetElection,
       refreshElection: fetchElection,
       categoryOf,

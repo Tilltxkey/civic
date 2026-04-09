@@ -314,7 +314,16 @@ function AppShell({
   const handleSelectRace = (id: string) => {
     setSelectedRaceId(id);
     setUserPicked(true);
+    const s = document.getElementById("main-scroll");
+    if (s) s.scrollTop = 0;
   };
+
+  // Card click: user taps a candidate card in Race → open vote sheet pre-selected
+  const [pendingVote, setPendingVote] = useState<{ candidateId: string; postId: string } | null>(null);
+  const handleCardClick = useCallback((candidateId: string, postId: string) => {
+    setPendingVote({ candidateId, postId });
+  }, []);
+  const handlePendingVoteDone = useCallback(() => setPendingVote(null), []);
 
   const handleOverlayDone = useCallback(() => setOverlay(null), []);
 
@@ -338,15 +347,17 @@ function AppShell({
         {activeTab === "community" && <CommunityHeader tab={communityFeed} setTab={setCommunityFeed} user={user} />}
 
         {/* Scrollable content */}
-        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", background: C.bg }}>
+        <div id="main-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", background: C.bg }}>
           {activeTab === "vote" && (
-            <Race votesA={vA} votesB={vB} reporting={rep} selectedRaceId={selectedRaceId} />
+            <Race votesA={vA} votesB={vB} reporting={rep} selectedRaceId={selectedRaceId} onCardClick={handleCardClick} />
           )}
           {activeTab !== "community" && (
             <Treemap
               depts={depts}
               selectedRaceId={selectedRaceId}
               onSelectRace={handleSelectRace}
+              pendingVote={pendingVote}
+              onPendingVoteDone={handlePendingVoteDone}
               activeTab={activeTab}
               onTabChange={setActiveTab}
               onOpenThesis={setOpenThesis}

@@ -792,20 +792,23 @@ export function CandidacySheet({ user, onClose, onGoToComm, onBadgeGranted }: Ca
 // and calls castVote() instead of local state.
 
 interface RealVoteSheetProps {
-  user:      UserProfile;
-  postId:    PostId;
-  onClose:   () => void;
+  user:               UserProfile;
+  postId:             PostId;
+  onClose:            () => void;
+  initialCandidateId?: string; // when set, opens directly on the confirm step
 }
 
-export function RealVoteSheet({ user, postId, onClose }: RealVoteSheetProps) {
+export function RealVoteSheet({ user, postId, onClose, initialCandidateId }: RealVoteSheetProps) {
   const C = useC();
-  const { candidatesForPost, castVote, myVotes } = useElection();
+  const { candidatesForPost, castVote, myVotes, profilePhotos } = useElection();
   const candidates = candidatesForPost(postId)
     .slice()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const postLabel  = POSTS.find(p => p.id === postId)?.label ?? "";
-  const [selected, setSelected] = useState<string | null>(null);
-  const [step,     setStep]     = useState<"pick" | "confirm" | "done">("pick");
+  const [selected, setSelected] = useState<string | null>(initialCandidateId ?? null);
+  const [step,     setStep]     = useState<"pick" | "confirm" | "done">(
+    initialCandidateId ? "confirm" : "pick"
+  );
   const [loading,  setLoading]  = useState(false);
   const [errMsg,   setErrMsg]   = useState<string | null>(null);
   const [countdown,setCountdown]= useState(5);
@@ -824,16 +827,47 @@ export function RealVoteSheet({ user, postId, onClose }: RealVoteSheetProps) {
   }, [step, onClose]);
 
   if (alreadyVoted) {
+    const votedCandId = myVotes.find(v => v.postId === postId)?.candidateId;
+    const votedCand   = candidates.find(c => c.id === votedCandId);
+    const ci          = votedCand ? candidates.findIndex(c => c.id === votedCand.id) : 0;
+    const clr         = candidateColor(ci >= 0 ? ci : 0);
+    const photo       = votedCand ? profilePhotos[votedCand.userId] : undefined;
     return (
       <Sheet onClose={onClose}>
-        <div style={{ padding: "24px", textAlign: "center" }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>✅</div>
-          <div style={{ fontWeight: 700, fontSize: 18, color: C.text, marginBottom: 8 }}>
-            Vote enregistré
+        <div style={{ padding: "16px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, flex: 1 }}>
+          {/* Candidate avatar */}
+          <div style={{
+            width: 72, height: 72, borderRadius: "50%",
+            background: `${clr}18`, border: `2px solid ${clr}44`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            overflow: "hidden", flexShrink: 0,
+          }}>
+            {photo ? (
+              <img src={photo} alt={votedCand?.userName} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            ) : (
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="8.5" r="3.5" fill={clr} opacity=".5"/>
+                <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={clr} opacity=".4"/>
+              </svg>
+            )}
           </div>
-          <div style={{ fontSize: 13, color: C.sub, marginBottom: 24 }}>
-            Vous avez déjà voté pour ce poste.
+          {/* Name + post */}
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>{votedCand?.userName ?? "—"}</div>
+            <div style={{ fontSize: 12, color: C.sub, marginTop: 3 }}>{postLabel}</div>
           </div>
+          {/* Animated +1 */}
+          <div style={{
+            fontFamily: "var(--f-mono)",
+            fontSize: 36, fontWeight: 700,
+            color: clr,
+            animation: "plusOne .5s cubic-bezier(.2,.8,.3,1) both",
+            letterSpacing: "-1px",
+          }}>
+            +1
+          </div>
+        </div>
+        <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
           <button onClick={onClose} style={{
             width: "100%", padding: "14px", borderRadius: 14,
             border: `1.5px solid ${C.border2}`, background: C.card,
@@ -900,17 +934,25 @@ export function RealVoteSheet({ user, postId, onClose }: RealVoteSheetProps) {
                           </svg>
                         )}
                       </div>
-                      {/* Avatar */}
+                      {/* Avatar — profile photo if available, fallback to initials ring */}
                       <div style={{
                         width: 40, height: 40, borderRadius: "50%",
                         background: `${colorFor}18`, border: `2px solid ${colorFor}44`,
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        flexShrink: 0,
+                        flexShrink: 0, overflow: "hidden",
                       }}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                          <circle cx="12" cy="8.5" r="3.5" fill={colorFor} opacity=".5"/>
-                          <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={colorFor} opacity=".4"/>
-                        </svg>
+                        {profilePhotos[c.userId] ? (
+                          <img
+                            src={profilePhotos[c.userId]}
+                            alt={c.userName}
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          />
+                        ) : (
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <circle cx="12" cy="8.5" r="3.5" fill={colorFor} opacity=".5"/>
+                            <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={colorFor} opacity=".4"/>
+                          </svg>
+                        )}
                       </div>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{c.userName}</div>
@@ -949,16 +991,26 @@ export function RealVoteSheet({ user, postId, onClose }: RealVoteSheetProps) {
             {(() => {
               const ci = candidates.findIndex(c => c.id === selectedCand.id);
               const clr = candidateColor(ci >= 0 ? ci : 0);
+              const photo = profilePhotos[selectedCand.userId];
               return (
                 <div style={{
-                  width: 64, height: 64, borderRadius: "50%",
+                  width: 80, height: 80, borderRadius: "50%",
                   background: `${clr}18`, border: `2px solid ${clr}44`,
                   display: "flex", alignItems: "center", justifyContent: "center",
+                  overflow: "hidden",
                 }}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="8.5" r="3.5" fill={clr} opacity=".5"/>
-                    <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={clr} opacity=".4"/>
-                  </svg>
+                  {photo ? (
+                    <img
+                      src={photo}
+                      alt={selectedCand.userName}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    />
+                  ) : (
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="8.5" r="3.5" fill={clr} opacity=".5"/>
+                      <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={clr} opacity=".4"/>
+                    </svg>
+                  )}
                 </div>
               );
             })()}
@@ -978,32 +1030,58 @@ export function RealVoteSheet({ user, postId, onClose }: RealVoteSheetProps) {
       )}
 
       {/* Step 3: Done */}
-      {step === "done" && (
-        <>
-          <div style={{ flex: 1, padding: "20px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, overflowY: "auto" }}>
-            <div style={{
-              fontFamily: "var(--f-mono)",
-              fontSize: 40, fontWeight: 700,
-              color: C.gold,
-              animation: "plusOne .5s cubic-bezier(.2,.8,.3,1) both",
-            }}>
-              +1
+      {step === "done" && selectedCand && (() => {
+        const ci    = candidates.findIndex(c => c.id === selectedCand.id);
+        const clr   = candidateColor(ci >= 0 ? ci : 0);
+        const photo = profilePhotos[selectedCand.userId];
+        return (
+          <>
+            <div style={{ flex: 1, padding: "16px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, overflowY: "auto" }}>
+              {/* Candidate avatar — photo or SVG fallback */}
+              <div style={{
+                width: 72, height: 72, borderRadius: "50%",
+                background: `${clr}18`, border: `2px solid ${clr}44`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                overflow: "hidden", flexShrink: 0,
+              }}>
+                {photo ? (
+                  <img src={photo} alt={selectedCand.userName} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : (
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="8.5" r="3.5" fill={clr} opacity=".5"/>
+                    <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={clr} opacity=".4"/>
+                  </svg>
+                )}
+              </div>
+              {/* Name + post */}
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>{selectedCand.userName}</div>
+                <div style={{ fontSize: 12, color: C.sub, marginTop: 3 }}>{postLabel}</div>
+              </div>
+              {/* Animated +1 */}
+              <div style={{
+                fontFamily: "var(--f-mono)",
+                fontSize: 36, fontWeight: 700,
+                color: clr,
+                animation: "plusOne .5s cubic-bezier(.2,.8,.3,1) both",
+                letterSpacing: "-1px",
+              }}>
+                +1
+              </div>
             </div>
-            <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>Vote enregistré !</div>
-            <div style={{ fontSize: 13, color: C.sub }}>{selectedCand?.userName}</div>
-          </div>
-          <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
-            <button onClick={onClose} style={{
-              width: "100%", padding: "14px", borderRadius: 14,
-              border: `1.5px solid ${C.border2}`, background: C.card,
-              color: C.text, fontFamily: "var(--f-sans)",
-              fontSize: 14, fontWeight: 600, cursor: "pointer",
-            }}>
-              Terminé ({countdown}s)
-            </button>
-          </div>
-        </>
-      )}
+            <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
+              <button onClick={onClose} style={{
+                width: "100%", padding: "14px", borderRadius: 14,
+                border: `1.5px solid ${C.border2}`, background: C.card,
+                color: C.text, fontFamily: "var(--f-sans)",
+                fontSize: 14, fontWeight: 600, cursor: "pointer",
+              }}>
+                Terminé ({countdown}s)
+              </button>
+            </div>
+          </>
+        );
+      })()}
     </Sheet>
   );
 }

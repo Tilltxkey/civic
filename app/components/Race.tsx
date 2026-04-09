@@ -17,6 +17,7 @@ import { n2fr, p2fr } from "./helpers";
 import { useElection, POSTS } from "./ElectionContext";
 interface RaceProps {
   votesA: number; votesB: number; reporting: number; selectedRaceId: string;
+  onCardClick?: (candidateId: string, postId: string) => void;
 }
 // ─── CANDIDATE COLOR PALETTE ─────────────────────────────────
 const CAND_COLORS = [
@@ -32,26 +33,60 @@ export function candidateColor(i: number): string {
 }
 // ─── CANDIDATE CARD ──────────────────────────────────────────
 // Original design preserved exactly — no vote/pct inside the card.
-function CandidateCard({ name, color, stretch }: { name: string; color: string; stretch?: boolean }) {
+function CandidateCard({
+  name, color, stretch, photo, onClick,
+}: {
+  name: string; color: string; stretch?: boolean;
+  photo?: string; onClick?: () => void;
+}) {
   const C = useC();
+  const isClickable = !!onClick;
   return (
-    <div style={{
-      ...(stretch ? { flex: 1, minWidth: 0 } : { flexShrink: 0, width: 110, scrollSnapAlign: "start" }),
-      padding: "7px 6px",
-      display: "flex", flexDirection: "column",
-      alignItems: "center", gap: 5, textAlign: "center",
-    }}>
+    <div
+      onClick={onClick}
+      style={{
+        ...(stretch ? { flex: 1, minWidth: 0 } : { flexShrink: 0, width: 110, scrollSnapAlign: "start" }),
+        padding: "7px 6px",
+        display: "flex", flexDirection: "column",
+        alignItems: "center", gap: 5, textAlign: "center",
+        cursor: isClickable ? "pointer" : "default",
+        WebkitTapHighlightColor: "transparent",
+      }}
+    >
       <div style={{
-        width: 110, height: 100, borderRadius: 14,
+        width: 130, height: 130, borderRadius: 70,
         border: `1px solid ${color}33`,
         background: `${color}18`,
         display: "flex", alignItems: "center", justifyContent: "center",
-        flexShrink: 0,
-      }}>
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="8.5" r="3.5" fill={color} opacity=".4"/>
-          <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={color} opacity=".3"/>
-        </svg>
+        flexShrink: 0, overflow: "hidden",
+        transition: isClickable ? "transform .15s, box-shadow .15s" : undefined,
+        boxShadow: isClickable ? `0 0 0 0px ${color}55` : undefined,
+      }}
+        onPointerDown={isClickable ? e => {
+          (e.currentTarget as HTMLElement).style.transform = "scale(.96)";
+          (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 3px ${color}44`;
+        } : undefined}
+        onPointerUp={isClickable ? e => {
+          (e.currentTarget as HTMLElement).style.transform = "";
+          (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 0px ${color}55`;
+        } : undefined}
+        onPointerLeave={isClickable ? e => {
+          (e.currentTarget as HTMLElement).style.transform = "";
+          (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 0px ${color}55`;
+        } : undefined}
+      >
+        {photo ? (
+          <img
+            src={photo}
+            alt={name}
+            style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 14 }}
+          />
+        ) : (
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="8.5" r="3.5" fill={color} opacity=".4"/>
+            <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={color} opacity=".3"/>
+          </svg>
+        )}
       </div>
       <div style={{ minWidth: 0, width: "100%" }}>
         <div style={{
@@ -136,11 +171,12 @@ function BarLegend({ slots }: { slots: { id?: string; name: string; votes: numbe
   );
 }
 // ─── MAIN RACE COMPONENT ─────────────────────────────────────
-export default function Race({ selectedRaceId }: RaceProps) {
+export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
   const C  = useC();
   const { t } = useLang();
-  const { election, candidatesForPost, allVotes, winnerOfPost } = useElection();
-  const isPast = election?.status === "past";
+  const { election, candidatesForPost, allVotes, winnerOfPost, profilePhotos } = useElection();
+  const isPast    = election?.status === "past";
+  const isOngoing = election?.status === "ongoing";
   const viewedPostId = selectedRaceId as any;
   const viewedPost   = POSTS.find(p => p.id === viewedPostId)
     ?? ALL_RACES.find(r => r.id === selectedRaceId);
@@ -159,6 +195,7 @@ export default function Race({ selectedRaceId }: RaceProps) {
   // Build slots from real candidates
   const rawSlots = viewedCands.map((cand, i) => ({
     id:       cand.id,
+    userId:   cand.userId,
     name:     cand.userName,
     votes:    candVotes[i],
     pct:      totalVotes > 0 ? (candVotes[i] / totalVotes) * 100 : 0,
@@ -172,9 +209,10 @@ export default function Race({ selectedRaceId }: RaceProps) {
   // the complement: phantom pct = 100 - candVotes[0]/totalVotes*100.
   // Visually the bar split shows exactly how far the candidate is from majority.
   if (rawSlots.length === 1) {
-    const realPct = rawSlots[0].pct; // already computed above
+    const realPct = rawSlots[0].pct;
     rawSlots.push({
       id:       "abstention",
+      userId:   "",
       name:     "Sans candidature",
       votes:    0,
       pct:      100 - realPct,
@@ -184,7 +222,7 @@ export default function Race({ selectedRaceId }: RaceProps) {
   }
   // Pad to minimum 2 placeholders when no candidates at all
   while (rawSlots.length < 2) {
-    rawSlots.push({ id: `placeholder-${rawSlots.length}`, name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(rawSlots.length), isWinner: false });
+    rawSlots.push({ id: `placeholder-${rawSlots.length}`, userId: "", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(rawSlots.length), isWinner: false });
   }
   const slots = rawSlots;
   const isMulti = slots.length > 2;
@@ -194,7 +232,7 @@ export default function Race({ selectedRaceId }: RaceProps) {
       <div style={{ marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <div style={{
-            fontWeight: 600, fontSize: "clamp(14px,3vw,18px)", color: C.text,
+            fontWeight: 600, fontSize: "clamp(17px,3vw,18px)", color: C.text,
             letterSpacing: "-.3px", lineHeight: 1.15,
             flex: 1, minWidth: 0, marginBottom: -15,
           }}>
@@ -204,7 +242,7 @@ export default function Race({ selectedRaceId }: RaceProps) {
             <Countdown selectedRaceId={selectedRaceId} />
           </div>
         </div>
-        <div style={{ fontSize: 10, color: C.sub, marginBottom: 20, marginTop: 0 }}>
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 20, marginTop: 0 }}>
           {isPast ? "Élection terminée — résultats définitifs" : t("race.noWinner")}
         </div>
       </div>
@@ -226,7 +264,14 @@ export default function Race({ selectedRaceId }: RaceProps) {
         }}>
           {slots.map((s, i) => (
             <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-              <CandidateCard name={s.name} color={s.color} />
+              <CandidateCard
+                name={s.name}
+                color={s.color}
+                photo={s.userId ? profilePhotos[s.userId] : undefined}
+                onClick={isOngoing && s.userId && onCardClick
+                  ? () => onCardClick(s.id, viewedPostId)
+                  : undefined}
+              />
               {i < slots.length - 1 && (
                 <div style={{
                   display: "flex", alignItems: "center", flexShrink: 0,
@@ -241,11 +286,27 @@ export default function Race({ selectedRaceId }: RaceProps) {
       ) : (
         // ≤ 2 candidates: original fixed layout — same gap, VS, everything
         <div style={{ display: "flex", gap: 6 }}>
-          <CandidateCard name={slots[0].name} color={slots[0].color} stretch />
+          <CandidateCard
+            name={slots[0].name}
+            color={slots[0].color}
+            stretch
+            photo={slots[0].userId ? profilePhotos[slots[0].userId] : undefined}
+            onClick={isOngoing && slots[0].userId && onCardClick
+              ? () => onCardClick(slots[0].id, viewedPostId)
+              : undefined}
+          />
           <div style={{ display: "flex", alignItems: "center", flexShrink: 0, fontSize: 10, color: C.dim, fontWeight: 500, letterSpacing: "1px" }}>
             VS
           </div>
-          <CandidateCard name={slots[1].name} color={slots[1].color} stretch />
+          <CandidateCard
+            name={slots[1].name}
+            color={slots[1].color}
+            stretch
+            photo={slots[1].userId ? profilePhotos[slots[1].userId] : undefined}
+            onClick={isOngoing && slots[1].userId && onCardClick
+              ? () => onCardClick(slots[1].id, viewedPostId)
+              : undefined}
+          />
         </div>
       )}
       {/* ── Race bar + stacked legend ── */}

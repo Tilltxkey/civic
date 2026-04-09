@@ -1,3 +1,4 @@
+
 /**
  * Treemap.tsx
  * ─────────────────────────────────────────────────────────────
@@ -1275,15 +1276,18 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
 // ─── MAIN TREEMAP COMPONENT ──────────────────────────────────
 
 interface TreemapProps {
-  depts:           Dept[];
-  selectedRaceId:  string;
-  onSelectRace:    (id: string) => void;
-  activeTab:       "results" | "vote" | "community";
-  onTabChange:     (tab: "results" | "vote" | "community") => void;
-  onOpenThesis:    (thesis: Thesis) => void;
-  currentUser?:    UserProfile | null;
-  onBadgeGranted?: () => void;
-  onGoToComm?:     (prefill: string) => void;
+  depts:              Dept[];
+  selectedRaceId:     string;
+  onSelectRace:       (id: string) => void;
+  activeTab:          "results" | "vote" | "community";
+  onTabChange:        (tab: "results" | "vote" | "community") => void;
+  onOpenThesis:       (thesis: Thesis) => void;
+  currentUser?:       UserProfile | null;
+  onBadgeGranted?:    () => void;
+  onGoToComm?:        (prefill: string) => void;
+  // Card-click vote: set by page.tsx when user taps a candidate card in Race
+  pendingVote?:       { candidateId: string; postId: string } | null;
+  onPendingVoteDone?: () => void;
 }
 
 type FlowState = "idle" | "pick" | "confirm" | "done";
@@ -1372,7 +1376,7 @@ function buildSexGroups(
 
 export default function Treemap({
   depts, selectedRaceId, onSelectRace, activeTab, onTabChange, onOpenThesis,
-  currentUser, onBadgeGranted, onGoToComm,
+  currentUser, onBadgeGranted, onGoToComm, pendingVote, onPendingVoteDone,
 }: TreemapProps) {
   const C = useC();
   const outerRef = useRef<HTMLDivElement>(null);
@@ -1390,6 +1394,7 @@ export default function Treemap({
   const [cepSheet,   setCepSheet]   = useState<CepSheet>("none");
   const [voterSheet, setVoterSheet] = useState<VoterSheet>("none");
   const [votePostId, setVotePostId] = useState<PostId>("president");
+  const [voteInitCand, setVoteInitCand] = useState<string | undefined>(undefined);
 
   const { t } = useLang();
   const {
@@ -1397,8 +1402,17 @@ export default function Treemap({
     candidatesForPost,
   } = useElection();
 
-  const elStatus = election?.status ?? "future";
+  const elStatus  = election?.status ?? "future";
   const isCepUser = currentUser ? isCEPRole(currentUser.role) : false;
+
+  // ── Card-click: open vote sheet pre-selected on the confirm step ──
+  useEffect(() => {
+    if (!pendingVote || !currentUser) return;
+    setVotePostId(pendingVote.postId as PostId);
+    setVoteInitCand(pendingVote.candidateId);
+    setVoterSheet("vote");
+    onPendingVoteDone?.();
+  }, [pendingVote]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Legacy dismiss handlers (used when status is not "ongoing") ──
   const cancelDismiss = useCallback(() => {
@@ -1886,7 +1900,8 @@ export default function Treemap({
         <RealVoteSheet
           user={currentUser}
           postId={votePostId}
-          onClose={() => setVoterSheet("none")}
+          initialCandidateId={voteInitCand}
+          onClose={() => { setVoterSheet("none"); setVoteInitCand(undefined); }}
         />
       )}
     </>
