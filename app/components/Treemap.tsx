@@ -1986,7 +1986,7 @@ function ElectionCTAButton({
           style={{
             position:"relative",
             display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-            gap:2, width:80, height:80, borderRadius:"50%",
+            gap:2, width:100, height:100, borderRadius:"50%",
             border:`1.5px solid ${C.border}`,
             background: C.surface,
             cursor:"pointer", fontFamily:"var(--f-sans)",

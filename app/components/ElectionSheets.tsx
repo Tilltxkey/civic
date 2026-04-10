@@ -396,7 +396,7 @@ export function LaunchElectionSheet({ onClose }: { onClose: () => void }) {
   const [step,         setStep]         = useState<LaunchStep>("posts");
   const [allPosts,     setAllPosts]     = useState(true);
   const [selectedPost, setSelectedPost] = useState<PostId>("president");
-  const [mode,         setMode]         = useState<ElectionMode>("ensemble");
+  const [mode,         setMode]         = useState<ElectionMode>("sequentiel");
   const [presidentSecs,   setPresidentSecs]   = useState(3600);  // 1h default
   const [othersSecs,      setOthersSecs]      = useState(3600);
 
@@ -463,28 +463,31 @@ export function LaunchElectionSheet({ onClose }: { onClose: () => void }) {
                   value: "ensemble" as ElectionMode,
                   label: "Tous les postes ensemble",
                   sub: "Tous les votes s'ouvrent simultanément.",
+                  disabled: true,
                 },
                 {
                   value: "sequentiel" as ElectionMode,
                   label: "L'un après l'autre",
                   sub: "Du Responsable Affaires Académiques au Président·e, dans l'ordre d'importance.",
+                  disabled: false,
                 },
-              ] as { value: ElectionMode; label: string; sub: string }[]).map(opt => {
+              ] as { value: ElectionMode; label: string; sub: string; disabled: boolean }[]).map(opt => {
                 const active = mode === opt.value;
                 return (
                   <div
                     key={opt.value}
-                    onClick={() => setMode(opt.value)}
+                    onClick={() => { if (!opt.disabled) setMode(opt.value); }}
                     style={{
                       padding: "14px 16px",
                       borderRadius: 14,
-                      border: `1.5px solid ${active ? C.gold : C.border}`,
-                      background: active ? C.goldBg : C.card,
-                      cursor: "pointer",
+                      border: `1.5px solid ${opt.disabled ? C.border : active ? C.gold : C.border}`,
+                      background: opt.disabled ? C.bg : active ? C.goldBg : C.card,
+                      cursor: opt.disabled ? "not-allowed" : "pointer",
+                      opacity: opt.disabled ? 0.4 : 1,
                       transition: "border-color .15s, background .15s",
                     }}
                   >
-                    <div style={{ fontWeight: 600, fontSize: 14, color: active ? C.gold : C.text }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: opt.disabled ? C.dim : active ? C.gold : C.text }}>
                       {opt.label}
                     </div>
                     <div style={{ fontSize: 12, color: C.sub, marginTop: 3 }}>{opt.sub}</div>
@@ -559,7 +562,7 @@ export function CandidacySheet({ user, onClose, onGoToComm, onBadgeGranted }: Ca
   const openPosts = (election?.openPosts && election.openPosts.length > 0)
     ? election.openPosts
     : POSTS.map(p => p.id);
-  const availablePosts = POSTS.filter(p => openPosts.includes(p.id));
+  const availablePosts = POSTS.filter(p => openPosts.includes(p.id)).slice().reverse();
   const postLabel = POSTS.find(p => p.id === selectedPost)?.label ?? "";
 
   // Check if user is already a candidate for any post
@@ -835,7 +838,6 @@ export function RealVoteSheet({ user, postId, onClose, initialCandidateId }: Rea
     return (
       <Sheet onClose={onClose}>
         <div style={{ padding: "16px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, flex: 1 }}>
-          {/* Candidate avatar */}
           <div style={{
             width: 72, height: 72, borderRadius: "50%",
             background: `${clr}18`, border: `2px solid ${clr}44`,
@@ -851,21 +853,15 @@ export function RealVoteSheet({ user, postId, onClose, initialCandidateId }: Rea
               </svg>
             )}
           </div>
-          {/* Name + post */}
           <div style={{ textAlign: "center" }}>
             <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>{votedCand?.userName ?? "—"}</div>
             <div style={{ fontSize: 12, color: C.sub, marginTop: 3 }}>{postLabel}</div>
           </div>
-          {/* Animated +1 */}
           <div style={{
-            fontFamily: "var(--f-mono)",
-            fontSize: 36, fontWeight: 700,
-            color: clr,
+            fontFamily: "var(--f-mono)", fontSize: 36, fontWeight: 700,
+            color: clr, letterSpacing: "-1px",
             animation: "plusOne .5s cubic-bezier(.2,.8,.3,1) both",
-            letterSpacing: "-1px",
-          }}>
-            +1
-          </div>
+          }}>+1</div>
         </div>
         <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
           <button onClick={onClose} style={{
