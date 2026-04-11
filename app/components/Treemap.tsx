@@ -27,7 +27,7 @@ import PdfViewer from "./PdfViewer";
 import { useC } from "./tokens";
 import { Dept, deptStatus, CANDIDATE_A, CANDIDATE_B, ALL_RACES, AnyRace } from "./data";
 import { useElection, POSTS, isCEPRole, type PostId } from "./ElectionContext";
-import { candidateColor } from "./Race";
+import { candidateColor, ConvergingBar } from "./Race";
 import type { UserProfile } from "./AuthFlow";
 import { InscriptionSheet, LaunchElectionSheet, CandidacySheet, RealVoteSheet, ResetElectionSheet } from "./ElectionSheets";
 
@@ -488,9 +488,10 @@ function VoterButton({ onPress }: { onPress: () => void }) {
 function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; onSelectRace: (id: string) => void }) {
   const C = useC();
   const { t } = useLang();
-  const { election, candidates, allVotes, winnerOfPost } = useElection();
+  const { election, candidates, allVotes, winnerOfPost, categorySexCounts } = useElection();
   const elStatus = election?.status ?? "future";
   const isPast   = elStatus === "past";
+  const totalEligible = (categorySexCounts.M + categorySexCounts.F) || 1;
 
   // Build per-post real data from DB — supports unlimited candidates
   const raceRows = POSTS
@@ -507,9 +508,13 @@ function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; on
         id:    cand.id,
         name:  cand.userName,
         votes: postVotes.filter(v => v.candidateId === cand.id).length,
-        pct:   totalVotes > 0 ? (postVotes.filter(v => v.candidateId === cand.id).length / totalVotes) * 100 : 0,
+        // pct = share of full electorate, not of votes cast
+        pct:   (postVotes.filter(v => v.candidateId === cand.id).length / totalEligible) * 100,
         color: candidateColor(i),
       }));
+
+      const castPct      = slots.reduce((s, r) => s + r.pct, 0);
+      const remainderPct = Math.max(0, 100 - castPct);
 
       const winner    = isPast ? winnerOfPost(post.id) : null;
       const pcts      = slots.map(s => s.pct);
@@ -519,7 +524,7 @@ function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; on
       const isClose   = elStatus === "ongoing" && totalVotes > 0 && gap < 2;
       const isElected = isPast && !!winner;
 
-      return { post, slots, totalVotes, winner, isClose, isElected };
+      return { post, slots, remainderPct, totalVotes, winner, isClose, isElected };
     });
 
   return (
@@ -529,7 +534,7 @@ function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; on
         {t("treemap.allRaces")}
       </div>
 
-      {raceRows.map(({ post, slots, totalVotes, winner, isClose, isElected }, i) => {
+      {raceRows.map(({ post, slots, remainderPct, totalVotes, winner, isClose, isElected }, i) => {
         const hasVotes = totalVotes > 0;
         const showPlaceholder = slots.length === 0;
         const displaySlots = showPlaceholder
@@ -538,9 +543,6 @@ function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; on
               { id: "b", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(1) },
             ]
           : slots;
-
-        // Cumulative pct for segmented bar
-        let cumPct = 0;
 
         return (
           <div key={post.id} onClick={() => onSelectRace(post.id)} style={{
@@ -581,40 +583,18 @@ function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; on
               );
             })}
 
-            {/* Segmented bar */}
-            <div style={{ height: 3, background: C.border, borderRadius: 99, overflow: "hidden", marginTop: 8, position: "relative" }}>
-              {hasVotes
-                ? displaySlots.map((s, si) => {
-                    const left = cumPct;
-                    cumPct += s.pct;
-                    return (
-                      <div key={s.id} style={{
-                        position: "absolute", left: `${left}%`, top: 0,
-                        height: "100%", width: `${s.pct}%`,
-                        background: isClose ? C.gold : s.color,
-                        borderRadius: si === 0 ? "99px 0 0 99px" : si === displaySlots.length - 1 ? "0 99px 99px 0" : "0",
-                        borderLeft: si > 0 ? `1px solid ${C.bg}` : "none",
-                        transition: "width 1s ease",
-                      }} />
-                    );
-                  })
-                : displaySlots.map((s, si) => (
-                    <div key={s.id} style={{
-                      position: "absolute",
-                      left: `${(si / displaySlots.length) * 100}%`,
-                      top: 0, height: "100%",
-                      width: `${100 / displaySlots.length}%`,
-                      background: s.color + "33",
-                      borderLeft: si > 0 ? `1px solid ${C.bg}` : "none",
-                    }} />
-                  ))
-              }
+            {/* Converging bar — fills by electorate share, gray remainder = uncast */}
+            <div style={{ marginTop: 8 }}>
+              <ConvergingBar slots={hasVotes
+                ? displaySlots.map(s => ({ pct: s.pct, color: isClose ? C.gold : s.color }))
+                : displaySlots.map(s => ({ pct: 0, color: s.color }))
+              } />
             </div>
 
             {/* Footer */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
               <span style={{ fontSize: 10, color: C.dim }}>
-                {totalVotes > 0 ? `${totalVotes} vote${totalVotes !== 1 ? "s" : ""}` : "Aucun vote"}
+                {totalVotes > 0 ? `${totalVotes} / ${totalEligible} votants` : "Aucun vote"}
               </span>
               {isElected && winner && (
                 <span style={{ fontSize: 10, fontWeight: 700, color: C.text, letterSpacing: ".5px", textTransform: "uppercase" }}>
@@ -1349,8 +1329,10 @@ function buildSexGroups(
   const mTotalVotes = mVotesPerCand.reduce((s, n) => s + n, 0);
   const fTotalVotes = fVotesPerCand.reduce((s, n) => s + n, 0);
 
-  const mCandPcts = mVotesPerCand.map(v => mTotalVotes > 0 ? (v / mTotalVotes) * 100 : 0);
-  const fCandPcts = fVotesPerCand.map(v => fTotalVotes > 0 ? (v / fTotalVotes) * 100 : 0);
+  // candPcts = each candidate's share of that sex's ELIGIBLE voters (not of votes cast)
+  // This matches the race bar formula: votes / population * 100
+  const mCandPcts = mVotesPerCand.map(v => (v / mPop) * 100);
+  const fCandPcts = fVotesPerCand.map(v => (v / fPop) * 100);
 
   const makeGroup = (
     label: string, abbr: string, pop: number,
@@ -1641,10 +1623,6 @@ export default function Treemap({
                 const ch = rect.h - GAP;
                 if (cw <= 0 || ch <= 0) return null;
 
-                // Voted portion height — candidate strips live inside this
-                const votedH   = Math.round((group.votedPct / 100) * ch);
-                const unvotedH = ch - votedH;
-
                 const minDim = Math.min(cw, ch);
                 const fs     = minDim < 60 ? 10 : minDim < 100 ? 13 : 18;
                 const sh     = "0 1px 4px rgba(0,0,0,.85)";
@@ -1652,15 +1630,16 @@ export default function Treemap({
                 const showPcts  = cw > 60 && ch > 50;
                 const showVotes = cw > 80 && ch > 70;
 
-                // Build N voted strips from top, then unvoted dim strip at bottom
-                // Each strip height ∝ (candPct / 100) * votedH
-                const nCands   = group.candVotes.length || 2;
-                const hasCands = nCands > 0 && group.totalVotes > 0;
+                // Build N candidate strips.
+                // Strip height = (candPct / 100) * ch — pct is already share of full
+                // electorate, so each strip is proportional to the full cell height.
+                // This ensures equal percentages always render equal heights regardless
+                // of how many votes have been cast so far.
+                const hasCands = group.candVotes.length > 0 && group.totalVotes > 0;
 
-                // Cumulative top offsets for each candidate strip
                 let cumH = 0;
                 const strips = group.candPcts.map((pct, ci) => {
-                  const h   = hasCands ? Math.round((pct / 100) * votedH) : 0;
+                  const h   = Math.round((pct / 100) * ch);
                   const top = cumH;
                   cumH     += h;
                   return { h, top, color: candidateColor(ci), pct, votes: group.candVotes[ci] };
@@ -1668,7 +1647,8 @@ export default function Treemap({
                 // Snap last strip so rounding doesn't leave a pixel gap
                 if (strips.length > 0 && hasCands) {
                   const last = strips[strips.length - 1];
-                  last.h = votedH - (cumH - last.h);
+                  last.h = Math.round((group.candPcts.reduce((s, p) => s + p, 0) / 100) * ch) - (cumH - last.h);
+                  last.h = Math.max(0, last.h);
                 }
 
                 const PAD = 3; // px padding inside cell for text
@@ -1712,10 +1692,10 @@ export default function Treemap({
                       </div>
                     ))}
 
-                    {/* Unvoted dim strip at bottom */}
+                    {/* Unvoted dim strip — fills everything below the candidate strips */}
                     <div style={{
-                      position: "absolute", left: 0, top: votedH,
-                      width: "100%", height: Math.max(0, unvotedH),
+                      position: "absolute", left: 0, top: cumH,
+                      width: "100%", height: Math.max(0, ch - cumH),
                       background: C.dim + "44",
                     }} />
 

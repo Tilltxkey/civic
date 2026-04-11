@@ -99,74 +99,80 @@ function CandidateCard({
     </div>
   );
 }
-// ─── SEGMENTED RACE BAR ──────────────────────────────────────
-function SegmentedBar({ slots }: { slots: { pct: number; color: string }[] }) {
+// ─── CONVERGING RACE BAR ─────────────────────────────────────
+// Layout rules (pct = share of full electorate):
+//   • 1 candidate  → fills from the left
+//   • 2 candidates → [0] grows from left, [1] grows from right, gray center shrinks
+//   • N candidates → [0] left-anchored, [N-1] right-anchored,
+//                    middle ones stack inward from left edge (after [0])
+// The gray track background is always 100% wide — colored segments sit on top.
+export function ConvergingBar({ slots }: { slots: { pct: number; color: string }[] }) {
   const C = useC();
-  const hasVotes = slots.some(s => s.pct > 0);
-  if (!hasVotes) {
-    return (
-      <div style={{ height: 7, background: C.dim, borderRadius: 99, overflow: "hidden", position: "relative", display: "flex" }}>
-        {slots.map((s, i) => (
-          <div key={i} style={{
-            flex: 1,
-            background: s.color + "44",
-            borderLeft: i > 0 ? `1.5px solid ${C.bg}` : "none",
-          }} />
-        ))}
-      </div>
-    );
+  if (slots.length === 0) return null;
+
+  // Build positioned segments
+  const segments: { left?: number; right?: number; width: number; color: string; key: number }[] = [];
+
+  if (slots.length === 1) {
+    segments.push({ left: 0, width: slots[0].pct, color: slots[0].color, key: 0 });
+  } else if (slots.length === 2) {
+    segments.push({ left:  0,              width: slots[0].pct, color: slots[0].color, key: 0 });
+    segments.push({ right: 0,              width: slots[1].pct, color: slots[1].color, key: 1 });
+  } else {
+    // First → left-anchored
+    segments.push({ left: 0, width: slots[0].pct, color: slots[0].color, key: 0 });
+    // Last → right-anchored
+    segments.push({ right: 0, width: slots[slots.length - 1].pct, color: slots[slots.length - 1].color, key: slots.length - 1 });
+    // Middle → stack leftward after slot[0]
+    let cursor = slots[0].pct;
+    for (let i = 1; i < slots.length - 1; i++) {
+      segments.push({ left: cursor, width: slots[i].pct, color: slots[i].color, key: i });
+      cursor += slots[i].pct;
+    }
   }
-  let cumPct = 0;
+
   return (
-    <div style={{ height: 7, background: C.dim, borderRadius: 99, overflow: "hidden", position: "relative" }}>
-      {slots.map((s, i) => {
-        const left    = cumPct;
-        cumPct       += s.pct;
-        const isFirst = i === 0;
-        const isLast  = i === slots.length - 1;
-        return (
-          <div key={i} style={{
-            position: "absolute",
-            left: `${left}%`, top: 0,
-            height: "100%", width: `${s.pct}%`,
-            background: s.color,
-            borderRadius: isFirst && isLast ? 99 : isFirst ? "99px 0 0 99px" : isLast ? "0 99px 99px 0" : "0",
-            borderLeft: i > 0 ? `1.5px solid ${C.bg}` : "none",
-            transition: "width 1.4s cubic-bezier(.4,0,.2,1), left 1.4s cubic-bezier(.4,0,.2,1)",
-          }} />
-        );
-      })}
+    <div style={{ height: 7, background: C.dim + "33", borderRadius: 99, overflow: "hidden", position: "relative" }}>
+      {segments.map(seg => (
+        <div key={seg.key} style={{
+          position: "absolute",
+          top: 0, height: "100%",
+          width: `${seg.width}%`,
+          ...(seg.left !== undefined ? { left: `${seg.left}%` } : {}),
+          ...(seg.right !== undefined ? { right: `${seg.right}%` } : {}),
+          background: seg.color,
+          transition: "width .9s cubic-bezier(.4,0,.2,1)",
+        }} />
+      ))}
     </div>
   );
 }
 // ─── STACKED BAR LEGEND ──────────────────────────────────────
 // Sleek: color square · name · votes (pct) — wraps naturally on narrow screens.
-function BarLegend({ slots }: { slots: { id?: string; name: string; votes: number; pct: number; color: string }[] }) {
+function BarLegend({ slots, totalEligible }: { slots: { id?: string; name: string; votes: number; pct: number; color: string }[]; totalEligible: number }) {
   const C = useC();
+  const castVotes = slots.reduce((s, r) => s + r.votes, 0);
+  const remaining = totalEligible - castVotes;
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", marginTop: 7 }}>
-      {slots.map((s, i) => {
-        const isPhantom = s.id === "abstention";
-        return (
-          <span key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: C.sub, opacity: isPhantom ? 0.55 : 1 }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: 2,
-              background: s.color, flexShrink: 0, display: "inline-block",
-            }} />
-            <span style={{ color: isPhantom ? C.dim : s.color, fontWeight: 600 }}>{s.name}</span>
-            {!isPhantom && (
-              <span style={{ fontFamily: "var(--f-mono)", color: C.dim }}>
-                {n2fr(s.votes)} ({p2fr(s.pct)})
-              </span>
-            )}
-            {isPhantom && (
-              <span style={{ fontFamily: "var(--f-mono)", color: C.dim }}>
-                seuil 50%+1
-              </span>
-            )}
+      {slots.map((s, i) => (
+        <span key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: C.sub }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0, display: "inline-block" }} />
+          <span style={{ color: s.color, fontWeight: 600 }}>{s.name}</span>
+          <span style={{ fontFamily: "var(--f-mono)", color: C.dim }}>
+            {n2fr(s.votes)} ({p2fr(s.pct)})
           </span>
-        );
-      })}
+        </span>
+      ))}
+      {remaining > 0 && (
+        <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: C.sub, opacity: 0.6 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: C.dim + "44", flexShrink: 0, display: "inline-block" }} />
+          <span style={{ color: C.dim }}>Non votés</span>
+          <span style={{ fontFamily: "var(--f-mono)", color: C.dim }}>
+            {n2fr(remaining)} ({p2fr((remaining / totalEligible) * 100)})
+          </span>
+        </span>
+      )}
     </div>
   );
 }
@@ -174,9 +180,10 @@ function BarLegend({ slots }: { slots: { id?: string; name: string; votes: numbe
 export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
   const C  = useC();
   const { t } = useLang();
-  const { election, candidatesForPost, allVotes, winnerOfPost, profilePhotos } = useElection();
+  const { election, candidatesForPost, allVotes, winnerOfPost, profilePhotos, categorySexCounts } = useElection();
   const isPast    = election?.status === "past";
   const isOngoing = election?.status === "ongoing";
+  const totalEligible = categorySexCounts.M + categorySexCounts.F || 1; // avoid /0
   const viewedPostId = selectedRaceId as any;
   const viewedPost   = POSTS.find(p => p.id === viewedPostId)
     ?? ALL_RACES.find(r => r.id === selectedRaceId);
@@ -192,34 +199,21 @@ export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
   );
   const totalVotes = candVotes.reduce((s, n) => s + n, 0);
   const winner     = isPast ? winnerOfPost(viewedPostId) : null;
-  // Build slots from real candidates
+  // Build slots — pct = candidate's share of the FULL electorate (not just votes cast)
   const rawSlots = viewedCands.map((cand, i) => ({
     id:       cand.id,
     userId:   cand.userId,
     name:     cand.userName,
     votes:    candVotes[i],
-    pct:      totalVotes > 0 ? (candVotes[i] / totalVotes) * 100 : 0,
+    pct:      (candVotes[i] / totalEligible) * 100,
     color:    candidateColor(i),
     isWinner: !!(winner && winner.id === cand.id),
   }));
-  // Single-candidate rule: inject "Sans candidature" phantom.
-  // Represents abstention / non-votes. The real candidate must beat it (>50%) to win.
-  // totalVotes here = votes cast; phantom votes = qualified voters who abstained.
-  // Since we don't store eligible voter count per-post, we model the phantom as
-  // the complement: phantom pct = 100 - candVotes[0]/totalVotes*100.
-  // Visually the bar split shows exactly how far the candidate is from majority.
-  if (rawSlots.length === 1) {
-    const realPct = rawSlots[0].pct;
-    rawSlots.push({
-      id:       "abstention",
-      userId:   "",
-      name:     "Sans candidature",
-      votes:    0,
-      pct:      100 - realPct,
-      color:    C.dim + "99",
-      isWinner: false,
-    });
-  }
+
+  // Gray remainder = uncast votes as share of electorate
+  const castPct     = rawSlots.reduce((s, r) => s + r.pct, 0);
+  const remainderPct = Math.max(0, 100 - castPct);
+
   // Pad to minimum 2 placeholders when no candidates at all
   while (rawSlots.length < 2) {
     rawSlots.push({ id: `placeholder-${rawSlots.length}`, userId: "", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(rawSlots.length), isWinner: false });
@@ -275,7 +269,7 @@ export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
               {i < slots.length - 1 && (
                 <div style={{
                   display: "flex", alignItems: "center", flexShrink: 0,
-                  fontSize: 10, color: C.dim, fontWeight: 500, letterSpacing: "1px",
+                  fontSize: 10, color: C.dim, fontWeight: 500, letterSpacing: "1px", padding:12,
                 }}>
                   VS
                 </div>
@@ -311,8 +305,8 @@ export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
       )}
       {/* ── Race bar + stacked legend ── */}
       <div style={{ marginTop: 5 }}>
-        <SegmentedBar slots={slots} />
-        <BarLegend slots={slots} />
+        <ConvergingBar slots={slots.map(s => ({ pct: s.pct, color: s.color }))} />
+        <BarLegend slots={slots} totalEligible={totalEligible} />
       </div>
     </div>
   );
@@ -396,9 +390,18 @@ function Countdown({ selectedRaceId }: { selectedRaceId: string }) {
 export function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; onSelectRace: (id: string) => void }) {
   const C = useC();
   const { t } = useLang();
-  const { election, candidates, allVotes, winnerOfPost } = useElection();
+  const { election, candidates, allVotes, winnerOfPost, categorySexCounts } = useElection();
+  const totalEligible = (categorySexCounts.M + categorySexCounts.F) || 1;
+
+  const handleSelectRace = (id: string) => {
+    onSelectRace(id);
+    const s = document.getElementById("main-scroll");
+    if (s) s.scrollTop = 0;
+  };
+
   const elStatus = election?.status ?? "future";
   const isPast   = elStatus === "past";
+
   const raceRows = [...POSTS].reverse()
     .filter(p => p.id !== selectedRaceId)
     .map(post => {
@@ -407,17 +410,19 @@ export function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: str
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       const postVotes  = allVotes.filter(v => v.postId === post.id);
       const totalVotes = postVotes.length;
+
       const slots = postCands.map((cand, i) => ({
         id:    cand.id,
         name:  cand.userName,
         votes: postVotes.filter(v => v.candidateId === cand.id).length,
-        pct:   totalVotes > 0 ? (postVotes.filter(v => v.candidateId === cand.id).length / totalVotes) * 100 : 0,
+        // pct = share of full electorate
+        pct:   (postVotes.filter(v => v.candidateId === cand.id).length / totalEligible) * 100,
         color: candidateColor(i),
       }));
-      // Single-candidate: inject abstention phantom
-      if (slots.length === 1) {
-        slots.push({ id: "abstention", name: "Sans candidature", votes: 0, pct: 100 - slots[0].pct, color: C.dim + "99" });
-      }
+
+      const castPct      = slots.reduce((s, r) => s + r.pct, 0);
+      const remainderPct = Math.max(0, 100 - castPct);
+
       const winner    = isPast ? winnerOfPost(post.id) : null;
       const pcts      = slots.map(s => s.pct);
       const maxPct    = pcts.length > 1 ? Math.max(...pcts) : 0;
@@ -425,24 +430,25 @@ export function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: str
       const gap       = maxPct - secondPct;
       const isClose   = elStatus === "ongoing" && totalVotes > 0 && gap < 2;
       const isElected = isPast && !!winner;
-      const displaySlots = slots.length === 0
-        ? [
-            { id: "a", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(0) },
-            { id: "b", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(1) },
-          ]
-        : slots;
-      return { post, displaySlots, totalVotes, winner, isClose, isElected };
+
+      return { post, slots, remainderPct, totalVotes, winner, isClose, isElected };
     });
+
   return (
     <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 6px" }}>
       <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: C.sub, marginBottom: 2 }}>
         {t("treemap.allRaces")}
       </div>
-      {raceRows.map(({ post, displaySlots, totalVotes, winner, isClose, isElected }, i) => {
+      {raceRows.map(({ post, slots, remainderPct, totalVotes, winner, isClose, isElected }, i) => {
         const hasVotes = totalVotes > 0;
-        let cumPct = 0;
+        const displaySlots = slots.length === 0
+          ? [
+              { id: "a", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(0) },
+              { id: "b", name: "Aucun candidat", votes: 0, pct: 0, color: candidateColor(1) },
+            ]
+          : slots;
         return (
-          <div key={post.id} onClick={() => onSelectRace(post.id)} style={{
+          <div key={post.id} onClick={() => handleSelectRace(post.id)} style={{
             borderTop: i === 0 ? "none" : `1px solid ${C.border}`,
             padding: "12px 0 10px",
             cursor: "pointer",
@@ -462,55 +468,32 @@ export function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: str
                 </div>
               )}
             </div>
-            {/* Candidates — one row per candidate with individual color */}
+            {/* Candidates */}
             {displaySlots.map((s, ci) => {
-              const isWinner  = !!(winner && s.id === winner.id);
-              const isPhantom = s.id === "abstention";
+              const isWinner = !!(winner && s.id === winner.id);
               return (
-                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: ci < displaySlots.length - 1 ? 5 : 0, opacity: isPhantom ? 0.5 : 1 }}>
+                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: ci < displaySlots.length - 1 ? 5 : 0 }}>
                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.color, flexShrink: 0, opacity: isWinner || !winner ? 1 : 0.35 }} />
                   <span style={{ flex: 1, fontSize: 13, fontWeight: isWinner ? 600 : 400, color: isWinner ? C.text : C.sub, opacity: isWinner || !winner ? 1 : 0.5 }}>
                     {s.name}
                   </span>
                   <span style={{ fontFamily: "var(--f-mono)", fontSize: 13, fontWeight: isWinner ? 600 : 400, color: isWinner ? s.color : C.sub, opacity: isWinner || !winner ? 1 : 0.5 }}>
-                    {isPhantom ? "seuil 50%+1" : hasVotes ? `${s.pct.toFixed(1).replace(".", ",")} %` : "0,0 %"}
+                    {hasVotes ? `${s.pct.toFixed(1).replace(".", ",")} %` : "0,0 %"}
                   </span>
                 </div>
               );
             })}
-            {/* Segmented bar */}
-            <div style={{ height: 3, background: C.border, borderRadius: 99, overflow: "hidden", marginTop: 8, position: "relative" }}>
-              {hasVotes
-                ? displaySlots.map((s, si) => {
-                    const left = cumPct;
-                    cumPct += s.pct;
-                    return (
-                      <div key={s.id} style={{
-                        position: "absolute", left: `${left}%`, top: 0,
-                        height: "100%", width: `${s.pct}%`,
-                        background: isClose ? C.gold : s.color,
-                        borderRadius: si === 0 ? "99px 0 0 99px" : si === displaySlots.length - 1 ? "0 99px 99px 0" : "0",
-                        borderLeft: si > 0 ? `1px solid ${C.bg}` : "none",
-                        transition: "width 1s ease",
-                      }} />
-                    );
-                  })
-                : displaySlots.map((s, si) => (
-                    <div key={s.id} style={{
-                      position: "absolute",
-                      left: `${(si / displaySlots.length) * 100}%`,
-                      top: 0, height: "100%",
-                      width: `${100 / displaySlots.length}%`,
-                      background: s.color + "33",
-                      borderLeft: si > 0 ? `1px solid ${C.bg}` : "none",
-                    }} />
-                  ))
-              }
+            {/* Converging bar — fills by electorate share, gray remainder = uncast */}
+            <div style={{ marginTop: 8 }}>
+              <ConvergingBar slots={hasVotes
+                ? displaySlots.map(s => ({ pct: s.pct, color: isClose ? C.gold : s.color }))
+                : displaySlots.map(s => ({ pct: 0, color: s.color }))
+              } />
             </div>
             {/* Footer */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
               <span style={{ fontSize: 10, color: C.dim }}>
-                {totalVotes > 0 ? `${totalVotes} vote${totalVotes !== 1 ? "s" : ""}` : "Aucun vote"}
+                {totalVotes > 0 ? `${totalVotes} / ${totalEligible} votants` : "Aucun vote"}
               </span>
               {isElected && winner && (
                 <span style={{ fontSize: 10, fontWeight: 700, color: C.text, letterSpacing: ".5px", textTransform: "uppercase" }}>
