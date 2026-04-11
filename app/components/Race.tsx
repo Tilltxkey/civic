@@ -33,14 +33,111 @@ export function candidateColor(i: number): string {
 }
 // ─── CANDIDATE CARD ──────────────────────────────────────────
 // Original design preserved exactly — no vote/pct inside the card.
+// ─── ÉLU·E BADGE ─────────────────────────────────────────────
+// LinkedIn-style arc ring that overlays the avatar circle exactly.
+// The SVG is 130×130 — same size as the circle — positioned absolute
+// over it so the arc sits right on the circle edge.
+// Arc: ~300° sweep, open gap at top. White stroke behind colored stroke
+// creates the white separation from the photo beneath.
+function EluBadge({ color }: { color: string }) {
+  const SIZE = 130;
+  const cx = SIZE / 2, cy = SIZE / 2;
+
+  // ── TWEAK THESE ──────────────────────────────────────────────
+  const ARC_RADIUS     = 57;    // how close the ring sits to the circle edge
+  const GAP_DEG        = 95;    // degrees of open gap at the top (bigger = shorter arc)
+  const ARC_THICKNESS  = 16;     // colored arc stroke width
+  const HALO_THICKNESS = 0;     // white separation ring behind colored arc
+  const END_SHAPE: "round" | "butt" = "butt";   // arc end caps: "round" or "butt" (square)
+  const ARC_OPACITY    = 1;     // overall arc opacity (0–1)
+  const FADE_ENDS      = true;  // gradient fade at arc tips
+  const FADE_OPACITY   = 0.8;     // opacity at arc tips (0 = fully transparent)
+  const TEXT_SIZE      = 9.5;   // font size of ÉLU·E label
+  // ─────────────────────────────────────────────────────────────
+
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const r = ARC_RADIUS;
+
+  // Gap centered at top (270°). Arc drawn clockwise (for visual arc).
+  const arcStartDeg = 315 + GAP_DEG / 2;  // e.g. 300°
+  const arcEndDeg   = 270 - GAP_DEG / 2 + 360; // e.g. 240° + 360 = 600° (wraps)
+
+  // Arc path: clockwise from arcStartDeg to arcEndDeg
+  const ax1 = cx + r * Math.cos(toRad(arcStartDeg));
+  const ay1 = cy + r * Math.sin(toRad(arcStartDeg));
+  const ax2 = cx + r * Math.cos(toRad(arcEndDeg - 360));
+  const ay2 = cy + r * Math.sin(toRad(arcEndDeg - 360));
+  const arcD = `M ${ax1.toFixed(2)} ${ay1.toFixed(2)} A ${r} ${r} 0 1 1 ${ax2.toFixed(2)} ${ay2.toFixed(2)}`;
+
+  // Text path: counter-clockwise arc (reversed) so text reads right-side up
+  // Goes from arcEndDeg → arcStartDeg the short way (counter-clockwise)
+  const textD = `M ${ax2.toFixed(2)} ${ay2.toFixed(2)} A ${r} ${r} 0 1 0 ${ax1.toFixed(2)} ${ay1.toFixed(2)}`;
+
+  const gradId  = `elu-grad-${color.replace("#", "")}`;
+  const arcId   = "elu-arc";
+  const textArcId = "elu-text-arc";
+
+  return (
+    <svg
+      width={SIZE} height={SIZE}
+      viewBox={`0 0 ${SIZE} ${SIZE}`}
+      style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 4, opacity: ARC_OPACITY }}
+    >
+      <defs>
+        <path id={arcId} d={arcD} />
+        <path id={textArcId} d={textD} />
+
+        {/* Gradient for fading arc ends */}
+        {FADE_ENDS && (
+          <linearGradient id={gradId} gradientUnits="userSpaceOnUse"
+            x1={ax1.toFixed(2)} y1={ay1.toFixed(2)}
+            x2={ax2.toFixed(2)} y2={ay2.toFixed(2)}
+          >
+            <stop offset="0%"   stopColor={color} stopOpacity={FADE_OPACITY} />
+            <stop offset="80%"  stopColor={color} stopOpacity="1" />
+            <stop offset="85%"  stopColor={color} stopOpacity="1" />
+            <stop offset="90%" stopColor={color} stopOpacity={FADE_OPACITY} />
+          </linearGradient>
+        )}
+      </defs>
+
+      {/* White halo */}
+      <path d={arcD} fill="none" stroke="white"
+        strokeWidth={HALO_THICKNESS} strokeLinecap={END_SHAPE} />
+
+      {/* Colored arc */}
+      <path d={arcD} fill="none"
+        stroke={FADE_ENDS ? `url(#${gradId})` : color}
+        strokeWidth={ARC_THICKNESS} strokeLinecap={END_SHAPE} />
+
+      {/* ÉLU·E text — follows reversed arc so it reads right-side up */}
+      <text
+        fontSize={TEXT_SIZE}
+        fontWeight="800"
+        fill="white"
+        fontFamily="var(--f-sans)"
+        letterSpacing="5.5"
+        dy = "3.5"
+      >
+        <textPath href={`#${textArcId}`} startOffset="75%" textAnchor="middle">
+          ÉLU·E
+        </textPath>
+      </text>
+    </svg>
+  );
+}
+
 function CandidateCard({
-  name, color, stretch, photo, onClick,
+  name, color, stretch, photo, onClick, isWinner, isPast,
 }: {
   name: string; color: string; stretch?: boolean;
   photo?: string; onClick?: () => void;
+  isWinner?: boolean; isPast?: boolean;
 }) {
   const C = useC();
   const isClickable = !!onClick;
+  const isLoser = isPast && isWinner === false;
+
   return (
     <div
       onClick={onClick}
@@ -51,46 +148,55 @@ function CandidateCard({
         alignItems: "center", gap: 5, textAlign: "center",
         cursor: isClickable ? "pointer" : "default",
         WebkitTapHighlightColor: "transparent",
+        opacity:  isLoser ? 0.32 : 1,
+        filter:   isLoser ? "grayscale(1)" : "none",
+        transition: "opacity .6s ease, filter .6s ease",
       }}
     >
-      <div style={{
-        width: 130, height: 130, borderRadius: 70,
-        border: `1px solid ${color}33`,
-        background: `${color}18`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        flexShrink: 0, overflow: "hidden",
-        transition: isClickable ? "transform .15s, box-shadow .15s" : undefined,
-        boxShadow: isClickable ? `0 0 0 0px ${color}55` : undefined,
-      }}
-        onPointerDown={isClickable ? e => {
-          (e.currentTarget as HTMLElement).style.transform = "scale(.96)";
-          (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 3px ${color}44`;
-        } : undefined}
-        onPointerUp={isClickable ? e => {
-          (e.currentTarget as HTMLElement).style.transform = "";
-          (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 0px ${color}55`;
-        } : undefined}
-        onPointerLeave={isClickable ? e => {
-          (e.currentTarget as HTMLElement).style.transform = "";
-          (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 0px ${color}55`;
-        } : undefined}
-      >
-        {photo ? (
-          <img
-            src={photo}
-            alt={name}
-            style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 14 }}
-          />
-        ) : (
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="8.5" r="3.5" fill={color} opacity=".4"/>
-            <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={color} opacity=".3"/>
-          </svg>
-        )}
+      {/* Avatar wrapper — position:relative so badge SVG can overlay it */}
+      <div style={{ position: "relative", width: 130, height: 130, flexShrink: 0 }}>
+        <div style={{
+          width: 130, height: 130, borderRadius: 70,
+          border: `1px solid ${color}33`,
+          background: `${color}18`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          overflow: "hidden",
+          transition: isClickable ? "transform .15s, box-shadow .15s" : undefined,
+          boxShadow: isClickable ? `0 0 0 0px ${color}55` : undefined,
+        }}
+          onPointerDown={isClickable ? e => {
+            (e.currentTarget as HTMLElement).style.transform = "scale(.96)";
+            (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 3px ${color}44`;
+          } : undefined}
+          onPointerUp={isClickable ? e => {
+            (e.currentTarget as HTMLElement).style.transform = "";
+            (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 0px ${color}55`;
+          } : undefined}
+          onPointerLeave={isClickable ? e => {
+            (e.currentTarget as HTMLElement).style.transform = "";
+            (e.currentTarget as HTMLElement).style.boxShadow = `0 0 0 0px ${color}55`;
+          } : undefined}
+        >
+          {photo ? (
+            <img
+              src={photo}
+              alt={name}
+              style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 14 }}
+            />
+          ) : (
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="8.5" r="3.5" fill={color} opacity=".4"/>
+              <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={color} opacity=".3"/>
+            </svg>
+          )}
+        </div>
+        {/* Badge overlays the circle exactly — same 130×130 */}
+        {isPast && isWinner && <EluBadge color={color} />}
       </div>
       <div style={{ minWidth: 0, width: "100%" }}>
         <div style={{
-          fontWeight: 600, fontSize: 15, color: C.text,
+          fontWeight: isPast && isWinner ? 700 : 600,
+          fontSize: 15, color: C.text,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         }}>
           {name}
@@ -265,6 +371,8 @@ export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
                 onClick={isOngoing && s.userId && onCardClick
                   ? () => onCardClick(s.id, viewedPostId)
                   : undefined}
+                isWinner={s.isWinner}
+                isPast={isPast}
               />
               {i < slots.length - 1 && (
                 <div style={{
@@ -288,6 +396,8 @@ export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
             onClick={isOngoing && slots[0].userId && onCardClick
               ? () => onCardClick(slots[0].id, viewedPostId)
               : undefined}
+            isWinner={slots[0].isWinner}
+            isPast={isPast}
           />
           <div style={{ display: "flex", alignItems: "center", flexShrink: 0, fontSize: 10, color: C.dim, fontWeight: 500, letterSpacing: "1px" }}>
             VS
@@ -300,6 +410,8 @@ export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
             onClick={isOngoing && slots[1].userId && onCardClick
               ? () => onCardClick(slots[1].id, viewedPostId)
               : undefined}
+            isWinner={slots[1].isWinner}
+            isPast={isPast}
           />
         </div>
       )}
