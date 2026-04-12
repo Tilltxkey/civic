@@ -1321,16 +1321,30 @@ function buildSexGroups(
   const fPop   = sexCounts.F || 1;
   const mShare = mPop / (mPop + fPop);
 
-  // Distribute each candidate's votes proportionally by sex population share
-  // (best approximation until voter_sexe is stored in civique_votes)
-  const mVotesPerCand = votesPerCand.map(v => Math.round(v * mShare));
+  // Distribute votes using largest-remainder method so allocations sum EXACTLY
+  // to Math.round(totalVotes * mShare). Guard against empty candidates and
+  // negative remainder (can occur if floors already exceed the rounded target).
+  const mTarget = Math.round(totalVotes * mShare);
+  const mExact  = votesPerCand.map(v => v * mShare);
+  const mFloor  = mExact.map(v => Math.floor(v));
+  const floorSum = mFloor.reduce((s, n) => s + n, 0);
+  let   mRemainder = Math.max(0, mTarget - floorSum); // never negative
+  // Sort by fractional part descending, distribute remaining units
+  const mFrac = mExact
+    .map((v, i) => ({ i, frac: v - mFloor[i] }))
+    .sort((a, b) => b.frac - a.frac);
+  const mVotesPerCand = [...mFloor];
+  for (let k = 0; k < mRemainder && k < mFrac.length; k++) {
+    mVotesPerCand[mFrac[k].i]++;
+  }
+
   const fVotesPerCand = votesPerCand.map((v, i) => v - mVotesPerCand[i]);
 
   const mTotalVotes = mVotesPerCand.reduce((s, n) => s + n, 0);
   const fTotalVotes = fVotesPerCand.reduce((s, n) => s + n, 0);
 
-  // candPcts = each candidate's share of that sex's ELIGIBLE voters (not of votes cast)
-  // This matches the race bar formula: votes / population * 100
+  // candPcts = each candidate's share of that sex's ELIGIBLE voters
+  // Since mVotesPerCand now sums correctly, these pcts will also sum ≤ 100%
   const mCandPcts = mVotesPerCand.map(v => (v / mPop) * 100);
   const fCandPcts = fVotesPerCand.map(v => (v / fPop) * 100);
 
@@ -1966,7 +1980,7 @@ function ElectionCTAButton({
           style={{
             position:"relative",
             display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-            gap:2, width:100, height:100, borderRadius:"50%",
+            gap:2, width:80, height:80, borderRadius:"50%",
             border:`1.5px solid ${C.border}`,
             background: C.surface,
             cursor:"pointer", fontFamily:"var(--f-sans)",

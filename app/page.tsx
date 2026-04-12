@@ -50,6 +50,7 @@ import type { UserProfile } from "./components/AuthFlow";
 import { useTheme } from "./components/ThemeContext";
 import { useProfile } from "./components/ProfileContext";
 import { useLang } from "./components/LangContext";
+import { signInUser } from "./components/db";
 import {
   DEPTS,
   Dept,
@@ -459,6 +460,18 @@ function AppShell({
 export default function Page() {
   // ── Auth state — local state, synced into ProfileContext via UserSync ──
   const [user, setUser] = useState<UserProfile | null>(null);
+  const { setUser: setProfileUser } = useProfile();
+
+  // Re-fetch current user from DB and push fresh badge/role into all contexts.
+  // Called by ElectionContext after endElection and resetElection.
+  const handleUserRefresh = useCallback(async () => {
+    if (!user) return;
+    const { user: fresh } = await signInUser(user.matricule, user.nom);
+    if (fresh) {
+      setUser(fresh);
+      setProfileUser(fresh);
+    }
+  }, [user, setProfileUser]);
 
   // ── Live state ─────────────────────────
   const [vA,    setVA]    = useState(INITIAL_VOTES_A);
@@ -506,7 +519,7 @@ export default function Page() {
 
       ) : (
         /* ── Mobile: show the full app ── */
-        <ElectionProvider user={user}>
+        <ElectionProvider user={user} onUserRefresh={handleUserRefresh}>
           <AppShell
             user={user}
             vA={vA} vB={vB} rep={rep} depts={depts}
@@ -514,7 +527,7 @@ export default function Page() {
             communityFeed={communityFeed} setCommunityFeed={setCommunityFeed}
             openThesis={openThesis} setOpenThesis={setOpenThesis}
             composePrefill={composePrefill} setComposePrefill={setComposePrefill}
-            onBadgeGranted={() => setUser(prev => prev ? { ...prev, badge: "gold" } : prev)}
+            onBadgeGranted={() => { /* badge only awarded to winners by endElection */ }}
           />
         </ElectionProvider>
       )}

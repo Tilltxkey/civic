@@ -119,7 +119,7 @@ function EluBadge({ color }: { color: string }) {
         letterSpacing="5.5"
         dy = "3.5"
       >
-        <textPath href={`#${textArcId}`} startOffset="75%" textAnchor="middle">
+        <textPath href={`#${textArcId}`} startOffset="62%" textAnchor="middle">
           ÉLU·E
         </textPath>
       </text>

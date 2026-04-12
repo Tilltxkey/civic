@@ -170,21 +170,58 @@ function CropScreen({ src, onConfirm, onCancel }: {
 
 // ── UserCard — shown at top of menu ──────────────────────────
 
-function badgeInitials(tag: string): string {
-  // "eco.3 · prés." → "ECO.3"
-  return tag.split("·")[0].trim().toUpperCase();
-}
-
 function VerifiedBadgeMini({ type }: { type: "gold"|"blue"|"gray" }) {
   if (type === "blue")  return <svg width="14" height="14" viewBox="0 0 22 22"><path d="M20.396 11c-.018-.646-.215-1.275-.57-1.816-.354-.54-.852-.972-1.438-1.246.223-.607.27-1.264.14-1.897-.131-.634-.437-1.218-.882-1.687-.47-.445-1.053-.75-1.687-.882-.633-.13-1.29-.083-1.897.14-.273-.587-.704-1.086-1.245-1.44S11.647 1.62 11 1.604c-.646.017-1.273.213-1.813.568s-.969.854-1.24 1.44c-.608-.223-1.267-.272-1.902-.14-.635.13-1.22.436-1.69.882-.445.47-.749 1.055-.878 1.688-.13.633-.08 1.29.144 1.896-.587.274-1.087.705-1.443 1.245-.356.54-.555 1.17-.574 1.817.02.647.218 1.276.574 1.817.356.54.856.972 1.443 1.245-.224.606-.274 1.263-.144 1.896.13.634.433 1.218.877 1.688.47.443 1.054.747 1.687.878.633.132 1.29.084 1.897-.136.274.586.705 1.084 1.246 1.439.54.354 1.17.551 1.816.569.647-.016 1.276-.213 1.817-.567s.972-.854 1.245-1.44c.604.239 1.266.296 1.903.164.636-.132 1.22-.447 1.68-.907.46-.46.776-1.044.908-1.681s.075-1.299-.165-1.903c.586-.274 1.084-.705 1.439-1.246.354-.54.551-1.17.569-1.816zM9.662 14.85l-3.429-3.428 1.293-1.302 2.072 2.072 4.4-4.794 1.347 1.246z" fill="#1D9BF0"/></svg>;
   if (type === "gold") return <svg width="14" height="14" viewBox="0 0 22 22"><defs><linearGradient id="ma" x1="4" x2="18" y1="2" y2="21" gradientUnits="userSpaceOnUse"><stop offset="0" stopColor="#f4e72a"/><stop offset=".6" stopColor="#cd8105"/><stop offset="1" stopColor="#f4e72a"/></linearGradient></defs><path d="M13.324 3.848L11 1.6 8.676 3.848l-3.201-.453-.559 3.184L2.06 8.095 3.48 11l-1.42 2.904 2.856 1.516.559 3.184 3.201-.452L11 20.4l2.324-2.248 3.201.452.559-3.184 2.856-1.516L18.52 11l1.42-2.905-2.856-1.516-.559-3.184z" fill="url(#ma)"/><path d="M6.234 11.423l3.429 3.428 5.683-6.206-1.347-1.247-4.4 4.795-2.072-2.072z" fill="#fff"/></svg>;
   return <svg width="14" height="14" viewBox="0 0 22 22"><path clipRule="evenodd" fillRule="evenodd" d="M12.05 2.056c-.568-.608-1.532-.608-2.1 0l-1.393 1.49c-.284.303-.685.47-1.1.455L5.42 3.932c-.832-.028-1.514.654-1.486 1.486l.069 2.039c.014.415-.152.816-.456 1.1l-1.49 1.392c-.608.568-.608 1.533 0 2.101l1.49 1.393c.304.284.47.684.456 1.1l-.07 2.038c-.027.832.655 1.514 1.487 1.486l2.038-.069c.415-.014.816.152 1.1.455l1.392 1.49c.569.609 1.533.609 2.102 0l1.393-1.49c.283-.303.684-.47 1.099-.455l2.038.069c.832.028 1.515-.654 1.486-1.486L18 14.542c-.015-.415.152-.815.455-1.099l1.49-1.393c.608-.568.608-1.533 0-2.101l-1.49-1.393c-.303-.283-.47-.684-.455-1.1l.068-2.038c.029-.832-.654-1.514-1.486-1.486l-2.038.07c-.415.013-.816-.153-1.1-.456zm-5.817 9.367l3.429 3.428 5.683-6.206-1.347-1.247-4.4 4.795-2.072-2.072z" fill="#829aab"/></svg>;
 }
 
-function UserCard({ profilePic, user }: { profilePic: string | null; user?: import("./AuthFlow").UserProfile | null }) {
-  const C = useC();
+function buildTag(user: import("./AuthFlow").UserProfile): string {
+  const fmap: Record<string,string> = {
+    "FDSE – Droit & Sciences Économiques": "eco",
+    "FLA – Lettres & Arts": "fla",
+    "FST – Sciences & Technologies": "fst",
+    "FMP – Médecine & Pharmacie": "fmp",
+    "FASCH – Sciences Humaines": "fasch",
+    "FGC – Génie Civil": "fgc",
+    "FA – Architecture": "fa",
+    "FAMV – Agronomie & Médecine Vétérinaire": "famv",
+  };
+  const rmap: Record<string,string> = {
+    "Délégué·e de classe":                "del.",
+    "Président·e d'association":          "prés.",
+    "Membre CEP":                         "cep",
+    "CEP — Responsable désigné·e":        "cep.resp.",
+    "Rectorat":                           "rect.",
+    "Responsable Affaires Académiques":   "RAA",
+    "Délégué·e":                          "dél.",
+    "Trésorier·e":                        "trés.",
+    "Secrétaire":                         "sec.",
+    "Président·e du Comité Exécutif":     "prés. CE",
+  };
+  const fcode = fmap[user.faculty] ?? "fdse";
+  const base  = `${fcode}.${user.year}`;
+  const role  = rmap[user.role];
+  return role ? `${base} · ${role}` : base;
+}
 
-  // NOM all caps, Prénom first letter capital only
+/**
+ * UserCard — FIXED: reads badge and role from ProfileContext.user (live)
+ * instead of the user prop passed to AppMenu (can be stale).
+ * The prop is only used as a fallback when context hasn't loaded yet.
+ */
+function UserCard({ profilePic, userProp }: {
+  profilePic: string | null;
+  userProp?: import("./AuthFlow").UserProfile | null;
+}) {
+  const C = useC();
+  // ── KEY FIX: use the live user from ProfileContext ──────────
+  // ProfileContext.user is updated by UserSync on every render where
+  // page.tsx's user state changes (triggered by onUserRefresh).
+  // This means badge and role changes appear here instantly.
+  const { user: ctxUser } = useProfile();
+  const user = ctxUser ?? userProp;
+
   const nomDisplay    = user ? user.nom.toUpperCase() : "";
   const prenomDisplay = user ? (user.prenom.charAt(0).toUpperCase() + user.prenom.slice(1).toLowerCase()) : "";
   const fullName      = user ? `${nomDisplay} ${prenomDisplay}`.trim() : "";
@@ -192,7 +229,6 @@ function UserCard({ profilePic, user }: { profilePic: string | null; user?: impo
     ? (user.nom.charAt(0) + (user.prenom.charAt(0) ?? "")).toUpperCase()
     : "?";
   const color = user?.avatarColor ?? C.gold;
-  // Build tag: faculty abbr + year + role abbr
   const tag = user ? buildTag(user) : "";
 
   return (
@@ -207,12 +243,12 @@ function UserCard({ profilePic, user }: { profilePic: string | null; user?: impo
           </div>
         )}
       </div>
-      {/* Name + badge */}
+      {/* Name + badge — badge comes from live ctxUser */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
         <span style={{ fontWeight: 700, fontSize: 16, color: C.text }}>{fullName || "—"}</span>
         {user?.badge && <VerifiedBadgeMini type={user.badge} />}
       </div>
-      {/* Tag */}
+      {/* Tag — role comes from live ctxUser, so elected role appears instantly */}
       <div style={{ fontSize: 12, color: C.sub }}>{tag}</div>
       {/* Matricule */}
       {user?.matricule && (
@@ -220,31 +256,6 @@ function UserCard({ profilePic, user }: { profilePic: string | null; user?: impo
       )}
     </div>
   );
-}
-
-function buildTag(user: import("./AuthFlow").UserProfile): string {
-  // faculty short code
-  const fmap: Record<string,string> = {
-    "FDSE – Droit & Sciences Économiques": "eco",
-    "FLA – Lettres & Arts": "fla",
-    "FST – Sciences & Technologies": "fst",
-    "FMP – Médecine & Pharmacie": "fmp",
-    "FASCH – Sciences Humaines": "fasch",
-    "FGC – Génie Civil": "fgc",
-    "FA – Architecture": "fa",
-    "FAMV – Agronomie & Médecine Vétérinaire": "famv",
-  };
-  const rmap: Record<string,string> = {
-    "Délégué·e de classe":         "del.",
-    "Président·e d'association":   "prés.",
-    "Membre CEP":                  "cep",
-    "CEP — Responsable désigné·e": "cep.resp.",
-    "Rectorat":                    "rect.",
-  };
-  const fcode = fmap[user.faculty] ?? "fdse";
-  const base  = `${fcode}.${user.year}`;
-  const role  = rmap[user.role];
-  return role ? `${base} · ${role}` : base;
 }
 
 export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserProfile | null } = {}) {
@@ -256,7 +267,7 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
   const [notifs,     setNotifs]     = useState(true);
   const [photoSheet, setPhotoSheet] = useState(false);
   const [cropSrc,    setCropSrc]    = useState<string | null>(null);
-  const { profilePic, setProfilePic, user: ctxUser, setUser: ctxSetUser } = useProfile(); // global — updates everywhere
+  const { profilePic, setProfilePic, user: ctxUser, setUser: ctxSetUser } = useProfile();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const darkMode = theme === "dark";
@@ -310,8 +321,8 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
         transition: "transform .22s cubic-bezier(.2,.8,.3,1), opacity .18s ease",
         display: "flex", flexDirection: "column", overflow: "hidden",
       }}>
-        {/* ── User profile card ── */}
-        <UserCard profilePic={profilePic} user={userProp} />
+        {/* ── User profile card — reads live user from ProfileContext ── */}
+        <UserCard profilePic={profilePic} userProp={userProp} />
         <div style={{ height: 1, background: C.border, margin: "0 16px 8px", flexShrink: 0 }} />
 
         {/* Set photo */}

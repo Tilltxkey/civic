@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -962,11 +963,17 @@ function buildAuthorTag(u: UserProfile): string {
     "FAMV – Agronomie & Médecine Vétérinaire": "famv",
   };
   const rmap: Record<string,string> = {
-    "Délégué·e de classe":         "del.",
-    "Président·e d'association":   "prés.",
-    "Membre CEP":                  "cep",
-    "CEP — Responsable désigné·e": "cep.resp.",
-    "Rectorat":                    "rect.",
+    "Délégué·e de classe":                "del.",
+    "Président·e d'association":          "prés.",
+    "Membre CEP":                         "cep",
+    "CEP — Responsable désigné·e":        "cep.resp.",
+    "Rectorat":                           "rect.",
+    // Elected post roles written by endElection for confirmed winners
+    "Responsable Affaires Académiques":   "RAA",
+    "Délégué·e":                          "dél.",
+    "Trésorier·e":                        "trés.",
+    "Secrétaire":                         "sec.",
+    "Président·e du Comité Exécutif":     "prés. CE",
   };
   const code = fmap[u.faculty] ?? "fdse";
   const base = `${code}.${u.year}`;

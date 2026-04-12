@@ -32,22 +32,18 @@ export const POSTS = [
 ] as const;
 export type PostId = typeof POSTS[number]["id"];
 // ── Overlay duration ─────────────────────────────────────────
-// How many seconds the pre-election / between-post countdown overlay
-// shows before voting actually begins. Election timers are pushed
-// forward by exactly this amount so the overlay never eats into
-// voting time — integrity is preserved for every client.
 export const OVERLAY_SECS = 30;
 export interface PostTimer {
   postId:       PostId;
-  durationSecs: number;   // total seconds for this post's vote
-  endsAt:       string | null;  // ISO timestamp, set when election goes live
+  durationSecs: number;
+  endsAt:       string | null;
 }
 export interface CandidateRecord {
   id:          string;
   userId:      string;
   postId:      PostId;
-  userName:    string;   // nom + prenom
-  userSexe:    string;   // 'M' | 'F'
+  userName:    string;
+  userSexe:    string;
   electionId:  string;
   badge:       "gold" | null;
   createdAt:   string;
@@ -62,11 +58,11 @@ export interface VoteRecord {
 }
 export interface ElectionRecord {
   id:            string;
-  category:      string;  // "faculty|field|year|vacation"
+  category:      string;
   status:        ElectionStatus;
   mode:          ElectionMode | null;
-  activePostId:  PostId | null;   // which post is currently being voted on
-  openPosts:     PostId[];        // posts open for candidature / voting
+  activePostId:  PostId | null;
+  openPosts:     PostId[];
   timers:        PostTimer[];
   createdAt:     string;
   updatedAt:     string;
@@ -77,17 +73,16 @@ interface ElectionCtx {
   myVotes:           VoteRecord[];
   allVotes:          VoteRecord[];
   categorySexCounts: { M: number; F: number };
-  profilePhotos:     Record<string, string>; // userId → profile_photo URL
+  profilePhotos:     Record<string, string>;
   isCEP:             boolean;
   loading:           boolean;
-  // Actions
   launchInscription:  (posts: PostId[]) => Promise<void>;
   launchElection:     (posts: PostId[], mode: ElectionMode, timers: PostTimer[]) => Promise<void>;
   submitCandidacy:    (postId: PostId, user: UserProfile) => Promise<{ error: string | null }>;
   castVote:           (candidateId: string, postId: PostId, user: UserProfile) => Promise<{ error: string | null }>;
   resetElection:      () => Promise<void>;
   refreshElection:    () => Promise<void>;
-  // Derived helpers
+  onUserRefresh?:     () => Promise<void>;
   categoryOf:         (u: UserProfile) => string;
   candidatesForPost:  (postId: PostId) => CandidateRecord[];
   votesForPost:       (postId: PostId) => VoteRecord[];
@@ -123,9 +118,11 @@ const Ctx = createContext<ElectionCtx>({
 export function ElectionProvider({
   children,
   user,
+  onUserRefresh,
 }: {
-  children: ReactNode;
-  user: UserProfile | null;
+  children:       ReactNode;
+  user:           UserProfile | null;
+  onUserRefresh?: () => Promise<void>;
 }) {
   const [election,   setElection]   = useState<ElectionRecord | null>(null);
   const [candidates, setCandidates] = useState<CandidateRecord[]>([]);
@@ -136,6 +133,7 @@ export function ElectionProvider({
   const [loading,    setLoading]    = useState(true);
   const category = user ? categoryOf(user) : null;
   const isCEP    = user ? isCEPRole(user.role) : false;
+
   // ── Fetch election for user's category ─────────────────────
   const fetchElection = useCallback(async () => {
     if (!category || !DB_READY || !supabase) { setLoading(false); return; }
@@ -157,7 +155,6 @@ export function ElectionProvider({
         updatedAt:    elData.updated_at,
       };
       setElection(rec);
-      // Fetch candidates for this election
       const { data: cData } = await supabase
         .from("civique_candidates")
         .select("*")
@@ -172,7 +169,6 @@ export function ElectionProvider({
         badge:      r.badge,
         createdAt:  r.created_at,
       })));
-      // Fetch current user's votes
       if (user) {
         const { data: vData } = await supabase
           .from("civique_votes")
@@ -188,7 +184,6 @@ export function ElectionProvider({
           createdAt:   r.created_at,
         })));
       }
-      // Fetch ALL votes for this election (for real vote counts in treemap + race bar)
       const { data: allVData } = await supabase
         .from("civique_votes")
         .select("*")
@@ -201,8 +196,6 @@ export function ElectionProvider({
         electionId:  r.election_id,
         createdAt:   r.created_at,
       })));
-      // Fetch sex counts for the category from civique_users
-      // Split the category string: "faculty|field|year|vacation"
       const [fac, fld, yr, vac] = elData.category.split("|");
       const { data: usersData } = await supabase
         .from("civique_users")
@@ -227,17 +220,13 @@ export function ElectionProvider({
   useEffect(() => { fetchElection(); }, [fetchElection]);
 
   // ── Fetch profile photos for all candidates ─────────────────
-  // Runs whenever the candidates list changes (new candidacy, election reset, etc.)
   useEffect(() => {
     if (candidates.length === 0) { setProfilePhotos({}); return; }
     const ids = candidates.map(c => c.userId);
     fetchUserPhotos(ids).then(photos => setProfilePhotos(photos));
   }, [candidates]);
+
   // ── Realtime subscription on election row ───────────────────
-  // We do NOT use a row-level filter on civique_elections because the
-  // category value contains "|" which breaks Supabase realtime filter syntax.
-  // Instead subscribe to ALL changes and filter locally — guarantees instant
-  // propagation to every client in the same category when CEP changes status.
   useEffect(() => {
     if (!category || !DB_READY || !supabase) return;
     const chName = "civique_election_rt_" + category.replace(/[^a-zA-Z0-9]/g, "_");
@@ -255,15 +244,34 @@ export function ElectionProvider({
         event: "*", schema: "public", table: "civique_candidates",
       }, () => { fetchElection(); })
       .subscribe();
-    // Polling fallback every 10s — catches any missed realtime push
     const pollId = setInterval(() => { fetchElection(); }, 10_000);
     return () => {
       supabase!.removeChannel(ch);
       clearInterval(pollId);
     };
   }, [category, fetchElection]);
+
+  // ── NEW: Realtime subscription on current user's own row ────
+  // This makes badge and role changes (gold granted/revoked, elected role set)
+  // reflect instantly for the logged-in user without needing a page reload.
+  // Fires onUserRefresh which re-fetches from DB and updates all contexts.
+  useEffect(() => {
+    if (!user?.id || !DB_READY || !supabase) return;
+    const ch = supabase
+      .channel(`civique_user_self_${user.id}`)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "civique_users",
+        filter: `id=eq.${user.id}`,
+      }, () => {
+        if (onUserRefresh) onUserRefresh();
+      })
+      .subscribe();
+    return () => { supabase!.removeChannel(ch); };
+  }, [user?.id, onUserRefresh]);
+
   // ── Auto-advance sequentiel mode ────────────────────────────
-  // Refs always hold the latest value — safe to read inside long-lived intervals
   const electionRef       = useRef(election);
   const candidatesRef     = useRef(candidates);
   const isCEPRef          = useRef(isCEP);
@@ -273,9 +281,7 @@ export function ElectionProvider({
   useEffect(() => { isCEPRef.current         = isCEP;          }, [isCEP]);
   useEffect(() => { fetchElectionRef.current = fetchElection;  }, [fetchElection]);
 
-  // ── Auto-advance: single interval, never recreated ────────────
-  // Uses refs so the closure is always fresh. No stale state issues.
-  const advancingRef = useRef(false); // prevent concurrent writes
+  const advancingRef = useRef(false);
   useEffect(() => {
     if (!DB_READY || !supabase) return;
     const iv = setInterval(async () => {
@@ -286,9 +292,7 @@ export function ElectionProvider({
       const now = Date.now();
 
       if (el.mode === "sequentiel") {
-        // ── Sequential: check the active post's timer ──────────
         const activeTimer = el.timers.find(t => t.postId === el.activePostId);
-        // If there's no active post or its timer hasn't been set yet, skip
         if (!activeTimer?.endsAt) return;
         const secsLeft = Math.floor((new Date(activeTimer.endsAt).getTime() - now) / 1000);
         if (secsLeft > 0) return;
@@ -314,7 +318,6 @@ export function ElectionProvider({
               updated_at: new Date().toISOString(),
             }).eq("id", el.id);
           } else {
-            // No more posts — end the election
             await endElection(el);
           }
           await fetchElectionRef.current();
@@ -322,12 +325,9 @@ export function ElectionProvider({
           setTimeout(() => { advancingRef.current = false; }, 4000);
         }
       } else {
-        // ── Ensemble: check whether ALL open-post timers have expired ──
-        // This path does NOT rely on activePostId (which is null in ensemble mode).
         const openTimers = el.timers.filter(t => el.openPosts.includes(t.postId));
-        if (openTimers.length === 0) return; // timers not set yet
+        if (openTimers.length === 0) return;
 
-        // At least one timer must have an endsAt (safety-guard against partially saved state)
         const anyTimerSet = openTimers.some(t => !!t.endsAt);
         if (!anyTimerSet) return;
 
@@ -346,63 +346,118 @@ export function ElectionProvider({
       }
     }, 3000);
     return () => clearInterval(iv);
-  }, []); // stable — reads all live state via refs; no deps needed
-  // ── End election + remove loser badges ──────────────────────
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── End election + settle winner/loser badges and roles ─────
+  // STEP 1: Revoke gold from ALL users in category (including temporary campaign badges)
+  // STEP 2: Tally votes
+  // STEP 3: Award gold + elected role only to confirmed winners
+  // STEP 4: Mark election as past
   const endElection = async (el: ElectionRecord) => {
     if (!DB_READY || !supabase) return;
     const fetch = fetchElectionRef.current;
-    // Mark election as past
-    const { error: updateErr } = await supabase
-      .from("civique_elections")
-      .update({ status: "past", updated_at: new Date().toISOString() })
-      .eq("id", el.id);
-    // Immediately re-fetch so local state reflects the new status
-    if (!updateErr) await fetch();
-    // Remove gold badge from losing candidates
-    // Winners keep their badge; losers have it revoked
+
+    const POST_ROLE_MAP: Record<string, string> = {
+      raa:        "Responsable Affaires Académiques",
+      delegue:    "Délégué·e",
+      tresorier:  "Trésorier·e",
+      secretaire: "Secrétaire",
+      president:  "Président·e du Comité Exécutif",
+    };
+    const ALL_ELECTED_ROLES = Object.values(POST_ROLE_MAP);
+    const [fac, fld, yr, vac] = el.category.split("|");
+    const yearInt = parseInt(yr, 10);
+
+    // ── STEP 1: Sweep entire category before any awards ────────
+    // Revoke gold badge from ALL users in the category
+    // This includes candidates whose temporary campaign gold is now removed
+    await supabase
+      .from("civique_users")
+      .update({ badge: null })
+      .eq("faculty", fac).eq("field", fld).eq("year", yearInt).eq("vacation", vac)
+      .eq("badge", "gold");
+
+    // Reset anyone holding an elected role back to "Étudiant·e"
+    for (const roleLabel of ALL_ELECTED_ROLES) {
+      await supabase
+        .from("civique_users")
+        .update({ role: "Étudiant·e" })
+        .eq("faculty", fac).eq("field", fld).eq("year", yearInt).eq("vacation", vac)
+        .eq("role", roleLabel);
+    }
+
+    // Revoke badge on all candidate rows
+    await supabase
+      .from("civique_candidates")
+      .update({ badge: null })
+      .eq("election_id", el.id);
+
+    // ── STEP 2: Tally votes ────────────────────────────────────
     const { data: voteData } = await supabase
       .from("civique_votes")
       .select("candidate_id, post_id")
       .eq("election_id", el.id);
     if (!voteData) return;
-    // Count votes per candidate
+
     const voteCounts: Record<string, number> = {};
     for (const v of voteData) {
       voteCounts[v.candidate_id] = (voteCounts[v.candidate_id] ?? 0) + 1;
     }
-    // For each post, find winner and revoke losers' badges
+
     const { data: candData } = await supabase
       .from("civique_candidates")
       .select("*")
       .eq("election_id", el.id);
     if (!candData) return;
+
+    const { data: eligibleData } = await supabase
+      .from("civique_users")
+      .select("id")
+      .eq("faculty", fac).eq("field", fld).eq("year", yearInt).eq("vacation", vac);
+    const totalEligible = eligibleData?.length ?? 1;
+
+    // ── STEP 3: Award winners ──────────────────────────────────
     for (const post of POSTS) {
       const postCands = candData.filter(c => c.post_id === post.id);
       if (postCands.length === 0) continue;
-      const totalPostVotes = postCands.reduce((s, c) => s + (voteCounts[c.id] ?? 0), 0);
-      const topCand = postCands.reduce((best, c) =>
-        (voteCounts[c.id] ?? 0) > (voteCounts[best.id] ?? 0) ? c : best
-      );
-      const topVotes = voteCounts[topCand.id] ?? 0;
-      // Must win strictly more than 50% of total votes cast (majority rule).
-      // If totalPostVotes = 0, no one wins. Single candidate needs >50% too.
-      const hasWon = totalPostVotes > 0 && topVotes > totalPostVotes / 2;
-      // Revoke badges for losers (and for the top candidate if they didn't reach majority)
-      const losers = hasWon
-        ? postCands.filter(c => c.id !== topCand.id)
-        : postCands; // everyone loses if no majority
-      for (const loser of losers) {
-        await supabase
-          .from("civique_users")
-          .update({ badge: null })
-          .eq("id", loser.user_id);
-        await supabase
-          .from("civique_candidates")
-          .update({ badge: null })
-          .eq("id", loser.id);
+
+      const maxVotes = Math.max(...postCands.map(c => voteCounts[c.id] ?? 0));
+      let winnerId: string | null = null;
+
+      if (postCands.length === 1) {
+        const votes = voteCounts[postCands[0].id] ?? 0;
+        winnerId = votes > totalEligible / 2 ? postCands[0].id : null;
+      } else {
+        const topCands = postCands.filter(c => (voteCounts[c.id] ?? 0) === maxVotes);
+        winnerId = maxVotes > 0 && topCands.length === 1 ? topCands[0].id : null;
       }
+
+      if (!winnerId) continue;
+
+      const winner = postCands.find(c => c.id === winnerId)!;
+      const postRoleLabel = POST_ROLE_MAP[post.id];
+
+      await supabase
+        .from("civique_users")
+        .update({ badge: "gold", role: postRoleLabel })
+        .eq("id", winner.user_id);
+
+      await supabase
+        .from("civique_candidates")
+        .update({ badge: "gold" })
+        .eq("id", winner.id);
     }
+
+    // ── STEP 4: Mark as past and refresh ─────────────────────
+    await supabase
+      .from("civique_elections")
+      .update({ status: "past", updated_at: new Date().toISOString() })
+      .eq("id", el.id);
+
+    await fetch();
+    if (onUserRefresh) await onUserRefresh();
   };
+
   // ── CEP ACTION: Launch inscription phase ────────────────────
   const launchInscription = useCallback(async (posts: PostId[]) => {
     if (!category || !DB_READY || !supabase || !user) return;
@@ -432,6 +487,7 @@ export function ElectionProvider({
     }
     await fetchElection();
   }, [category, election, user, fetchElection]);
+
   // ── CEP ACTION: Launch elections ────────────────────────────
   const launchElection = useCallback(async (
     posts: PostId[],
@@ -445,17 +501,13 @@ export function ElectionProvider({
     if (mode === "ensemble") {
       timersFinal = timers.map(t => ({
         ...t,
-        // Add OVERLAY_SECS so the overlay window doesn't eat into voting time.
-        // All clients show the overlay for OVERLAY_SECS, then the real vote clock starts.
         endsAt: new Date(now + (OVERLAY_SECS + t.durationSecs) * 1000).toISOString(),
       }));
     } else {
-      // Sequential: only first post with candidates gets endsAt; others get null
       const firstWithCands = sorted.find(p => candidates.some(c => c.postId === p.id)) ?? sorted[0];
       timersFinal = timers.map(t => ({
         ...t,
         endsAt: t.postId === firstWithCands?.id
-          // Add OVERLAY_SECS so the launch overlay doesn't eat into voting time.
           ? new Date(now + (OVERLAY_SECS + t.durationSecs) * 1000).toISOString()
           : null,
       }));
@@ -476,16 +528,23 @@ export function ElectionProvider({
       .eq("id", election.id);
     await fetchElection();
   }, [election, candidates, fetchElection]);
+
   // ── VOTER ACTION: Submit candidacy ───────────────────────────
+  // CHANGED: Now also grants gold badge on civique_users immediately upon
+  // successful candidacy registration. This temporary badge is swept away
+  // by endElection (step 1) when the election closes — winners get it back
+  // via step 3, losers do not.
   const submitCandidacy = useCallback(async (
     postId: PostId,
     u: UserProfile,
   ): Promise<{ error: string | null }> => {
     if (!election || !DB_READY || !supabase) return { error: "no_election" };
     if (isCEPRole(u.role)) return { error: "cep_cannot_candidate" };
+
     // Check not already a candidate for this post
     const existing = candidates.find(c => c.userId === u.id && c.postId === postId);
     if (existing) return { error: "already_candidate" };
+
     const id = makeId();
     const { error } = await supabase.from("civique_candidates").insert({
       id,
@@ -498,60 +557,68 @@ export function ElectionProvider({
       created_at:  new Date().toISOString(),
     });
     if (error) return { error: error.message };
-    // Grant gold badge to the user
+
+    // ── NEW: Grant temporary gold badge on civique_users for campaign ──
+    // This makes the gold badge appear immediately on the candidate's profile
+    // and in community posts without requiring a reload.
+    // The badge is revoked for all candidates in endElection step 1,
+    // then re-awarded only to confirmed winners in step 3.
     await supabase
       .from("civique_users")
       .update({ badge: "gold" })
       .eq("id", u.id);
-    // TODO: Send push notification to all category members
-    // Once push notifications are implemented, call:
-    // await notifyCategory(election.category, {
-    //   title: "Nouveau candidat",
-    //   body: `${u.prenom} ${u.nom} s'est candidaté·e pour le poste de ${POSTS.find(p => p.id === postId)?.label}`,
-    // });
+    // onUserRefresh will be triggered automatically via the realtime subscription
+    // on civique_users (added above), so the current user sees their badge
+    // update instantly if they are the one who just registered as a candidate.
+
     await fetchElection();
     return { error: null };
   }, [election, candidates, fetchElection]);
+
   // ── CEP ACTION: Reset election for a new cycle ──────────────
-  // Resets the election row to "future" and clears all candidates + votes
-  // so the CEP can immediately start a new inscription phase.
   const resetElection = useCallback(async () => {
-    if (!election || !DB_READY || !supabase) return;
-    // Delete all votes for this election
+    if (!election || !DB_READY || !supabase || !category) return;
+
+    const ALL_ELECTED_ROLES = [
+      "Responsable Affaires Académiques",
+      "Délégué·e",
+      "Trésorier·e",
+      "Secrétaire",
+      "Président·e du Comité Exécutif",
+    ];
+    const [fac, fld, yr, vac] = category.split("|");
+    const yearInt = parseInt(yr, 10);
+
+    await supabase.from("civique_votes").delete().eq("election_id", election.id);
+    await supabase.from("civique_candidates").delete().eq("election_id", election.id);
+
+    // Sweep the entire category — revoke gold badges and elected roles
     await supabase
-      .from("civique_votes")
-      .delete()
-      .eq("election_id", election.id);
-    // Delete all candidates (also revokes their badges via DB cascade)
-    // First revoke gold badges from all candidates
-    const { data: cands } = await supabase
-      .from("civique_candidates")
-      .select("user_id")
-      .eq("election_id", election.id);
-    for (const cand of cands ?? []) {
+      .from("civique_users")
+      .update({ badge: null })
+      .eq("faculty", fac).eq("field", fld).eq("year", yearInt).eq("vacation", vac)
+      .eq("badge", "gold");
+
+    for (const roleLabel of ALL_ELECTED_ROLES) {
       await supabase
         .from("civique_users")
-        .update({ badge: null })
-        .eq("id", cand.user_id);
+        .update({ role: "Étudiant·e" })
+        .eq("faculty", fac).eq("field", fld).eq("year", yearInt).eq("vacation", vac)
+        .eq("role", roleLabel);
     }
-    await supabase
-      .from("civique_candidates")
-      .delete()
-      .eq("election_id", election.id);
-    // Reset the election row to future
+
     await supabase
       .from("civique_elections")
       .update({
-        status:         "future",
-        mode:           null,
-        active_post_id: null,
-        open_posts:     [],
-        timers:         [],
-        updated_at:     new Date().toISOString(),
+        status: "future", mode: null, active_post_id: null,
+        open_posts: [], timers: [], updated_at: new Date().toISOString(),
       })
       .eq("id", election.id);
+
     await fetchElection();
-  }, [election, fetchElection]);
+    if (onUserRefresh) await onUserRefresh();
+  }, [election, category, fetchElection, onUserRefresh]);
+
   // ── VOTER ACTION: Cast a vote ────────────────────────────────
   const castVote = useCallback(async (
     candidateId: string,
@@ -560,7 +627,6 @@ export function ElectionProvider({
   ): Promise<{ error: string | null }> => {
     if (!election || !DB_READY || !supabase) return { error: "no_election" };
     if (isCEPRole(u.role)) return { error: "cep_cannot_vote" };
-    // Check not already voted for this post
     const alreadyVoted = myVotes.find(v => v.postId === postId);
     if (alreadyVoted) return { error: "already_voted" };
     const id = makeId();
@@ -576,6 +642,7 @@ export function ElectionProvider({
     await fetchElection();
     return { error: null };
   }, [election, myVotes, fetchElection]);
+
   // ── Derived helpers ──────────────────────────────────────────
   const candidatesForPost = useCallback((postId: PostId) =>
     candidates.filter(c => c.postId === postId),
@@ -584,20 +651,33 @@ export function ElectionProvider({
     myVotes.filter(v => v.postId === postId),
   [myVotes]);
   const winnerOfPost = useCallback((postId: PostId): CandidateRecord | null => {
-    // Only meaningful when election is past.
-    // Winner = candidate who kept their gold badge (losers & majority-failures have badge revoked).
+    if (election?.status !== "past") return null;
     const postCands = candidates.filter(c => c.postId === postId);
     if (postCands.length === 0) return null;
-    const withBadge = postCands.find(c => c.badge === "gold");
-    // If no one has a badge (e.g. single candidate didn't get >50%), return null — no winner.
-    return withBadge ?? null;
-  }, [candidates]);
+
+    const postVotes = allVotes.filter(v => v.postId === postId);
+    const voteCounts: Record<string, number> = {};
+    for (const v of postVotes) {
+      voteCounts[v.candidateId] = (voteCounts[v.candidateId] ?? 0) + 1;
+    }
+    const totalElig = categorySexCounts.M + categorySexCounts.F || 1;
+    const maxVotes = Math.max(...postCands.map(c => voteCounts[c.id] ?? 0));
+
+    if (postCands.length === 1) {
+      const votes = voteCounts[postCands[0].id] ?? 0;
+      return votes > totalElig / 2 ? postCands[0] : null;
+    }
+    const topCands = postCands.filter(c => (voteCounts[c.id] ?? 0) === maxVotes);
+    return maxVotes > 0 && topCands.length === 1 ? topCands[0] : null;
+  }, [election?.status, candidates, allVotes, categorySexCounts]);
+
   const secondsLeft = useCallback((postId: PostId): number => {
     if (!election) return 0;
     const timer = election.timers.find(t => t.postId === postId);
     if (!timer?.endsAt) return 0;
     return Math.max(0, Math.floor((new Date(timer.endsAt).getTime() - Date.now()) / 1000));
   }, [election]);
+
   return (
     <Ctx.Provider value={{
       election, candidates, myVotes, allVotes, categorySexCounts, profilePhotos, isCEP, loading,
