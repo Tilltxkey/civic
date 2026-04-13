@@ -15,6 +15,9 @@ import { useProfile } from "./ProfileContext";
 import { updateUserPhoto } from "./db";
 import React from "react";
 
+// ─── localStorage key — must match page.tsx ───────────────────
+const SESSION_KEY = "civique_user_id";
+
 // PhotoSheet and CropScreen are copied from Header.tsx
 // (importing them cross-file would create circular deps)
 // ─── PHOTO FLOW COMPONENTS ───────────────────────────────────
@@ -273,6 +276,12 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
   const darkMode = theme === "dark";
   const LANG_LABELS: Record<string, string> = { fr: "Français", ht: "Kreyòl" };
 
+  // ── Sign out: clears session and reloads to show login screen ─
+  const handleSignOut = useCallback(() => {
+    localStorage.removeItem(SESSION_KEY);
+    window.location.reload();
+  }, []);
+
   const row: React.CSSProperties = {
     display: "flex", alignItems: "center", gap: 12,
     padding: "14px 20px", background: "transparent",
@@ -385,6 +394,17 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
             </div>
           </div>
         </div>
+        <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
+
+        {/* Sign out */}
+        <button style={row} onClick={handleSignOut}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+            <polyline points="16 17 21 12 16 7" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+            <line x1="21" y1="12" x2="9" y2="12" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round"/>
+          </svg>
+          <span style={{ fontSize: 14, color: "#E8412A", fontWeight: 500 }}>{t("menu.signOut")}</span>
+        </button>
 
         <div style={{ flex: 1 }} />
         <div style={{ textAlign: "center", padding: "16px 20px 32px", fontSize: 10, color: C.dim }}>

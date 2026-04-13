@@ -119,6 +119,22 @@ export async function signInUser(
   return { user: fromRow(data), error: null };
 }
 
+// ── Get user by ID (used for session rehydration on reload) ───
+export async function getUserById(
+  id: string
+): Promise<{ user: UserProfile | null }> {
+  if (!DB_READY || !supabase) return { user: null };
+
+  const { data, error } = await supabase
+    .from("civique_users")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error || !data) return { user: null };
+  return { user: fromRow(data) };
+}
+
 // ── Posts ─────────────────────────────────────────────────────
 
 export interface DBPost {

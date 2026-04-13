@@ -9,6 +9,8 @@
  *  3. Runs a simulation tick every 4 seconds (replace with
  *     a real API fetch when your backend is ready).
  *  4. Passes data down to child components.
+ *  5. Persists the logged-in user's ID in localStorage so
+ *     they don't have to log in again on reload.
  *
  * HOW TO REPLACE THE SIMULATION WITH A REAL API:
  *  - Remove the setInterval in the useEffect below.
@@ -50,7 +52,7 @@ import type { UserProfile } from "./components/AuthFlow";
 import { useTheme } from "./components/ThemeContext";
 import { useProfile } from "./components/ProfileContext";
 import { useLang } from "./components/LangContext";
-import { signInUser } from "./components/db";
+import { signInUser, getUserById } from "./components/db";
 import {
   DEPTS,
   Dept,
@@ -62,6 +64,9 @@ import {
 import { useWindowWidth } from "./components/helpers";
 import { ElectionProvider, useElection, POSTS, OVERLAY_SECS } from "./components/ElectionContext";
 import { C, BREAK }        from "./components/tokens";
+
+// ─── localStorage key for session persistence ─────────────────
+const SESSION_KEY = "civique_user_id";
 
 // ─── GLOBAL CSS ──────────────────────────────────────────────
 // Keyframes and global rules injected once into the document.
@@ -413,7 +418,7 @@ function AppShell({
                 <path d="M20.5 18.5c0-2.2-1.8-3.8-4-3.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
             )},
-          ] as { id: "results"|"vote"|"community"; label: string; icon: React.ReactNode }[]).map(({ id, label, icon }) => {
+          ] as { id: "results"|"vote"|"community"; label: string; icon: ReactNode }[]).map(({ id, label, icon }) => {
             const isActive = activeTab === id;
             return (
               <button
@@ -458,9 +463,40 @@ function AppShell({
 }
 
 export default function Page() {
-  // ── Auth state — local state, synced into ProfileContext via UserSync ──
-  const [user, setUser] = useState<UserProfile | null>(null);
+  // ── Auth state ────────────────────────────────────────────────
+  const [user, setUser]       = useState<UserProfile | null>(null);
+  const [hydrated, setHydrated] = useState(false); // true once localStorage check is done
   const { setUser: setProfileUser } = useProfile();
+
+  // ── Rehydrate session from localStorage on first mount ───────
+  // Reads the saved user ID, fetches fresh data from DB, and
+  // restores the session — no login screen needed on reload.
+  useEffect(() => {
+    const savedId = localStorage.getItem(SESSION_KEY);
+    if (!savedId) {
+      setHydrated(true);
+      return;
+    }
+    getUserById(savedId).then(({ user: saved }) => {
+      if (saved) {
+        setUser(saved);
+        setProfileUser(saved);
+      } else {
+        // ID in storage is stale (user deleted, DB reset, etc.) — clear it
+        localStorage.removeItem(SESSION_KEY);
+      }
+      setHydrated(true);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Called when the user completes AuthFlow (sign-in or register) ──
+  // Saves the user's ID so they stay logged in across reloads.
+  const handleAuth = useCallback((u: UserProfile) => {
+    setUser(u);
+    setProfileUser(u);
+    localStorage.setItem(SESSION_KEY, u.id);
+  }, [setProfileUser]);
 
   // Re-fetch current user from DB and push fresh badge/role into all contexts.
   // Called by ElectionContext after endElection and resetElection.
@@ -470,6 +506,7 @@ export default function Page() {
     if (fresh) {
       setUser(fresh);
       setProfileUser(fresh);
+      localStorage.setItem(SESSION_KEY, fresh.id);
     }
   }, [user, setProfileUser]);
 
@@ -493,15 +530,16 @@ export default function Page() {
 
   // ── Render guard ───────────────────────
   // vw = 0 means the browser hasn't measured yet (SSR).
+  // hydrated = false means we're still checking localStorage.
   // Returning null prevents a flash of wrong layout.
-  if (vw === 0) return null;
+  if (vw === 0 || !hydrated) return null;
 
   // ── Auth gate — show AuthFlow until user is set ────────────
   if (!user) {
     return (
       <>
         <style>{CSS}</style>
-        <AuthFlow onAuth={setUser} />
+        <AuthFlow onAuth={handleAuth} />
       </>
     );
   }

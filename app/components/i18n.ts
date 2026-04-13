@@ -15,6 +15,7 @@ export const T: Record<Lang, Record<string, string>> = {
     "menu.language":       "Langue",
     "menu.darkMode":       "Mode sombre",
     "menu.notifications":  "Notifications",
+    "menu.signOut":        "Se déconnecter",
     "menu.credit":         "Propulsé par Pretari Technologies",
 
     // Race
@@ -70,6 +71,7 @@ export const T: Record<Lang, Record<string, string>> = {
     "menu.language":       "Lang",
     "menu.darkMode":       "Mòd nwa",
     "menu.notifications":  "Notifikasyon",
+    "menu.signOut":        "Dekonekte",
     "menu.credit":         "Fèt pa Pretari Technologies",
 
     // Race
