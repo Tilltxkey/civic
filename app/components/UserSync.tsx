@@ -36,5 +36,7 @@ export function UserSync({ user }: { user: UserProfile }) {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user.id]); // only re-run if a different user logs in
+}, [user.id]); // only re-run if a different user logs in
+
+  return null;
 }

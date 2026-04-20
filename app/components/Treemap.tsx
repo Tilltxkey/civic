@@ -23,7 +23,6 @@ import React, { useRef, useEffect, useState, useCallback } from "react";
 import { useLang } from "./LangContext";
 import { useTheme } from "./ThemeContext";
 import { AppMenu } from "./AppMenu";
-import PdfViewer from "./PdfViewer";
 import { useC } from "./tokens";
 import { Dept, deptStatus, CANDIDATE_A, CANDIDATE_B, ALL_RACES, AnyRace } from "./data";
 import { useElection, POSTS, isCEPRole, type PostId } from "./ElectionContext";
@@ -870,14 +869,14 @@ export interface Thesis {
 }
 
 const SAMPLE_THESES: Thesis[] = [
-  { id: 1, pdf: "/these_1.pdf", pdf: "/these_economie_informelle.pdf", title: "Économie informelle et croissance en Haïti",        author: "Jean-Baptiste Moreau",    date: "Mar 2024", favorite: true,  cover: "#4A6FA5" },
-  { id: 2, pdf: "/these_2.pdf", pdf: "/these_dollarisation.pdf", title: "Dollarisation et politique monétaire haïtienne",    author: "Claudette Saint-Fleur",  date: "Jan 2024", favorite: false, cover: "#8B5E3C" },
-  { id: 3, pdf: "/these_3.pdf", pdf: "/these_transferts_diaspora.pdf", title: "Impact des transferts diaspora sur le PIB",         author: "Pierre-Louis Augustin",  date: "Nov 2023", favorite: true,  cover: "#5A8A6F" },
-  { id: 4, pdf: "/these_4.pdf", pdf: "/these_microcredit.pdf", title: "Microcrédit et réduction de la pauvreté rurale",    author: "Marie-Ange Désir",       date: "Sep 2023", favorite: false, cover: "#7B4F8E" },
-  { id: 5, pdf: "/these_5.pdf", pdf: "/these_chocs_petroliers.pdf", title: "Chocs pétroliers et inflation en zone caribéenne",  author: "Robenson Étienne",       date: "Jul 2023", favorite: false, cover: "#C4603A" },
-  { id: 6, pdf: "/these_6.pdf", pdf: "/these_foncier.pdf", title: "Foncier et blocage du développement agricole",      author: "Nadège Compas",          date: "May 2023", favorite: true,  cover: "#4E7A8A" },
-  { id: 7, pdf: "/these_7.pdf", pdf: "/these_gouvernance.pdf", title: "Gouvernance budgétaire et dette publique",          author: "Frantz Lerebours",       date: "Mar 2023", favorite: false, cover: "#6B6B3A" },
-  { id: 8, pdf: "/these_8.pdf", pdf: "/these_education.pdf", title: "Éducation et capital humain : rendements privés",   author: "Sophia Blanc-Dominique", date: "Jan 2023", favorite: false, cover: "#8A4A6B" },
+  { id: 1, pdf: "/these_economie_informelle.pdf",  title: "Économie informelle et croissance en Haïti",        author: "Jean-Baptiste Moreau",    date: "Mar 2024", favorite: true,  cover: "#4A6FA5" },
+  { id: 2, pdf: "/these_dollarisation.pdf",        title: "Dollarisation et politique monétaire haïtienne",    author: "Claudette Saint-Fleur",  date: "Jan 2024", favorite: false, cover: "#8B5E3C" },
+  { id: 3, pdf: "/these_transferts_diaspora.pdf",  title: "Impact des transferts diaspora sur le PIB",         author: "Pierre-Louis Augustin",  date: "Nov 2023", favorite: true,  cover: "#5A8A6F" },
+  { id: 4, pdf: "/these_microcredit.pdf",          title: "Microcrédit et réduction de la pauvreté rurale",    author: "Marie-Ange Désir",       date: "Sep 2023", favorite: false, cover: "#7B4F8E" },
+  { id: 5, pdf: "/these_chocs_petroliers.pdf",     title: "Chocs pétroliers et inflation en zone caribéenne",  author: "Robenson Étienne",       date: "Jul 2023", favorite: false, cover: "#C4603A" },
+  { id: 6, pdf: "/these_foncier.pdf",              title: "Foncier et blocage du développement agricole",      author: "Nadège Compas",          date: "May 2023", favorite: true,  cover: "#4E7A8A" },
+  { id: 7, pdf: "/these_gouvernance.pdf",          title: "Gouvernance budgétaire et dette publique",          author: "Frantz Lerebours",       date: "Mar 2023", favorite: false, cover: "#6B6B3A" },
+  { id: 8, pdf: "/these_education.pdf",            title: "Éducation et capital humain : rendements privés",   author: "Sophia Blanc-Dominique", date: "Jan 2023", favorite: false, cover: "#8A4A6B" },
 ];
 
 
@@ -1271,7 +1270,7 @@ interface TreemapProps {
 }
 
 type FlowState = "idle" | "pick" | "confirm" | "done";
-type CepSheet  = "none" | "inscription" | "launch";
+type CepSheet  = "none" | "inscription" | "launch" | "reset";
 type VoterSheet= "none" | "candidacy"  | "vote";
 
 const NAV_H = 62;
@@ -1980,7 +1979,7 @@ function ElectionCTAButton({
           style={{
             position:"relative",
             display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-            gap:2, width:80, height:80, borderRadius:"50%",
+            gap:2, width:100, height:100, borderRadius:"50%",
             border:`1.5px solid ${C.border}`,
             background: C.surface,
             cursor:"pointer", fontFamily:"var(--f-sans)",

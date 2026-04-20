@@ -9,8 +9,31 @@
 
 import { useTheme } from "./ThemeContext";
 
+// ─── SHARED INTERFACE ─────────────────────────────────────────
+// Declaring ColorMap as an explicit interface (not derived from
+// one palette via typeof) lets both LIGHT and DARK satisfy it
+// without TypeScript complaining about literal type mismatches.
+export interface ColorMap {
+  bg:      string;
+  surface: string;
+  card:    string;
+  none:    string;
+  border:  string;
+  border2: string;
+  text:    string;
+  sub:     string;
+  dim:     string;
+  red:     string;
+  redBg:   string;
+  blue:    string;
+  blueBg:  string;
+  gold:    string;
+  goldBg:  string;
+  green:   string;
+}
+
 // ─── LIGHT PALETTE ───────────────────────────────────────────
-export const LIGHT = {
+export const LIGHT: ColorMap = {
   bg:      "#F4F3F0",
   surface: "#FFFFFF",
   card:    "#F9F8F6",
@@ -27,10 +50,10 @@ export const LIGHT = {
   gold:    "#C47F00",
   goldBg:  "#FDF6E3",
   green:   "#0b971e",
-} as const;
+};
 
-// ─── DARK PALETTEs ────────────────────────────────────────────
-export const DARK = {
+// ─── DARK PALETTE ─────────────────────────────────────────────
+export const DARK: ColorMap = {
   bg:      "#0c0c0c",
   surface: "#141414",
   card:    "#2b2b2e",
@@ -47,12 +70,10 @@ export const DARK = {
   gold:    "#D4920A",
   goldBg:  "#2A1E00",
   green:   "#1DB33A",
-} as const;
-
-export type ColorMap = typeof LIGHT;
+};
 
 // C = light palette as the static default (for non-hook usage like shared styles)
-export const C = LIGHT;
+export const C: ColorMap = LIGHT;
 
 // ─── HOOK — use inside components ────────────────────────────
 export function useC(): ColorMap {

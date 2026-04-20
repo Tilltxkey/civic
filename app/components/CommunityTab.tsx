@@ -550,6 +550,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
   onComment:   (text: string, imgs?: string[]) => void;
   onDelete:    () => void;
   onView:      () => void;
+  me:          Author;
   profilePic?: string | null;
   photoCache?: Record<string, string>;
   userId?:     string;
