@@ -427,8 +427,9 @@ export default function Race({ selectedRaceId, onCardClick }: RaceProps) {
 function Countdown({ selectedRaceId }: { selectedRaceId: string }) {
   const C  = useC();
   const { t } = useLang();
-  const { election, secondsLeft: getSecsLeft, refreshElection } = useElection();
-  const [secs, setSecs] = useState(0);
+  const { election, secondsLeft: getSecsLeft, inscriptionSecsLeft, refreshElection } = useElection();
+  const [secs,        setSecs]        = useState(0);
+  const [inscripSecs, setInscripSecs] = useState(0);
   const firedRef = useRef(false); // fire refreshElection only once per zero-crossing
 
   const timers      = election?.timers ?? [];
@@ -441,6 +442,7 @@ function Countdown({ selectedRaceId }: { selectedRaceId: string }) {
   const endsAt = viewedTimer?.endsAt ?? null;
   useEffect(() => { firedRef.current = false; }, [relevantId, endsAt]);
 
+  // Tick for ongoing/past vote timers
   useEffect(() => {
     const refreshRef = { fn: refreshElection };
     const update = () => {
@@ -455,16 +457,55 @@ function Countdown({ selectedRaceId }: { selectedRaceId: string }) {
     const id = setInterval(update, 1000);
     return () => clearInterval(id);
   }, [getSecsLeft, relevantId, election?.status, refreshElection]);
+
+  // Tick for inscription countdown
+  useEffect(() => {
+    if (election?.status !== "inscription") return;
+    const update = () => setInscripSecs(inscriptionSecsLeft());
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [election?.status, election?.inscriptionEndsAt, inscriptionSecsLeft]);
+
   const status = election?.status ?? "future";
-  // Only show "Terminé" once the DB confirms status === "past".
-  // While secs=0 but status is still "ongoing" (DB write in flight), show "clôture..."
-  const done     = status === "past";
-  const closing  = status === "ongoing" && secs === 0;
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
   const pad = (n: number) => String(n).padStart(2, "0");
-  if (status === "future" || status === "inscription") {
+
+  // ── Inscription: live countdown pill ─────────────────────────
+  if (status === "inscription") {
+    const hasTimer = !!(election?.inscriptionEndsAt);
+    const closed   = hasTimer && inscripSecs === 0;
+    const ih = Math.floor(inscripSecs / 3600);
+    const im = Math.floor((inscripSecs % 3600) / 60);
+    const is = inscripSecs % 60;
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+        background: closed ? C.none : hasTimer ? C.goldBg : C.surface,
+        border: `1px solid ${closed ? C.border2 : hasTimer ? C.gold : C.border2}`,
+        borderRadius: 99, padding: "5px 14px", flexShrink: 0,
+        transition: "border-color .5s, background .5s",
+      }}>
+        <div style={{
+          fontFamily: "var(--f-mono)", fontSize: 13, fontWeight: 500,
+          color: closed ? C.dim : hasTimer ? C.gold : C.dim,
+          letterSpacing: "1.5px", lineHeight: 1,
+          transition: "color .5s",
+        }}>
+          {closed ? "CLOSES" : hasTimer ? `${pad(ih)}:${pad(im)}:${pad(is)}` : "--:--:--"}
+        </div>
+        <div style={{
+          fontSize: 8, letterSpacing: ".5px", lineHeight: 1, textTransform: "uppercase",
+          color: closed ? C.dim : hasTimer ? C.gold : C.dim,
+          transition: "color .5s",
+        }}>
+          {closed ? "candidatures" : "inscriptions"}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Future: static dashes ─────────────────────────────────────
+  if (status === "future") {
     return (
       <div style={{
         display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
@@ -475,11 +516,20 @@ function Countdown({ selectedRaceId }: { selectedRaceId: string }) {
           --:--:--
         </div>
         <div style={{ fontSize: 8, color: C.dim, letterSpacing: ".5px", lineHeight: 1, textTransform: "uppercase" }}>
-          {status === "inscription" ? "inscriptions" : "en attente"}
+          en attente
         </div>
       </div>
     );
   }
+
+  // ── Ongoing / Past: vote timer ────────────────────────────────
+  // Only show "Terminé" once the DB confirms status === "past".
+  // While secs=0 but status is still "ongoing" (DB write in flight), show "clôture..."
+  const done    = status === "past";
+  const closing = status === "ongoing" && secs === 0;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
   return (
     <div style={{
       display: "flex", flexDirection: "column", alignItems: "center", gap: 2,

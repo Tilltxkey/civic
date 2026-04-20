@@ -6,7 +6,7 @@
  * All bottom-sheet modals for the election flow.
  *
  * CEP sheets:
- *   <InscriptionSheet>  — lancer les inscriptions
+ *   <InscriptionSheet>  — lancer les inscriptions (posts + durée)
  *   <LaunchElectionSheet> — lancer les élections (3 steps)
  *
  * Voter sheets:
@@ -264,6 +264,96 @@ function DurationSlider({
   );
 }
 
+// ─── INSCRIPTION DURATION SLIDER (1min → 72h) ───────────────
+
+const INSCRIPTION_SLIDER_STEPS = [
+  60, 120, 300, 600, 900, 1800,                          // 1m 2m 5m 10m 15m 30m
+  3600, 7200, 10800, 14400, 18000, 21600,                // 1h 2h 3h 4h 5h 6h
+  43200, 64800, 86400,                                   // 12h 18h 24h
+  129600, 172800, 216000, 259200,                        // 36h 48h 60h 72h
+];
+
+function fmtInscriptionDuration(secs: number): string {
+  if (secs < 3600) return `${secs / 60} min`;
+  if (secs < 86400) {
+    const h = secs / 3600;
+    return h === Math.floor(h) ? `${h}h` : `${Math.floor(h)}h${(secs % 3600) / 60}`;
+  }
+  const d = secs / 86400;
+  return d === Math.floor(d) ? `${d}j` : `${Math.floor(d)}j ${Math.round((secs % 86400) / 3600)}h`;
+}
+
+function InscriptionDurationSlider({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  const C = useC();
+  const idx = INSCRIPTION_SLIDER_STEPS.indexOf(value);
+  const sliderIdx = idx >= 0 ? idx : 6; // default 1h
+
+  return (
+    <div style={{ padding: "0 20px 20px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Durée des inscriptions</div>
+        <div style={{
+          fontFamily: "var(--f-mono)", fontSize: 14, fontWeight: 700,
+          color: C.gold, background: C.goldBg,
+          padding: "3px 10px", borderRadius: 8,
+        }}>
+          {fmtInscriptionDuration(value)}
+        </div>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={INSCRIPTION_SLIDER_STEPS.length - 1}
+        value={sliderIdx}
+        onChange={e => onChange(INSCRIPTION_SLIDER_STEPS[+e.target.value])}
+        style={{
+          width: "100%",
+          accentColor: C.gold,
+          cursor: "pointer",
+          height: 4,
+        }}
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+        <span style={{ fontSize: 10, color: C.dim }}>1 min</span>
+        <span style={{ fontSize: 10, color: C.dim }}>72h</span>
+      </div>
+
+      {/* Preview pill — shows what the countdown will look like */}
+      <div style={{
+        marginTop: 16,
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+      }}>
+        <div style={{ fontSize: 12, color: C.sub }}>Aperçu du compteur :</div>
+        <div style={{
+          display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+          background: C.surface,
+          border: `1px solid ${C.gold}`,
+          borderRadius: 99, padding: "5px 14px", flexShrink: 0,
+        }}>
+          <div style={{ fontFamily: "var(--f-mono)", fontSize: 13, fontWeight: 500, color: C.gold, letterSpacing: "1.5px", lineHeight: 1 }}>
+            {(() => {
+              const h = Math.floor(value / 3600);
+              const m = Math.floor((value % 3600) / 60);
+              const s = value % 60;
+              const pad = (n: number) => String(n).padStart(2, "0");
+              return `${pad(h)}:${pad(m)}:${pad(s)}`;
+            })()}
+          </div>
+          <div style={{ fontSize: 8, color: C.gold, letterSpacing: ".5px", lineHeight: 1, textTransform: "uppercase" }}>
+            inscriptions
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── SUCCESS SCREEN (auto-dismiss) ──────────────────────────
 
 function SuccessScreen({
@@ -335,19 +425,26 @@ function SuccessScreen({
 }
 
 // ─── CEP: INSCRIPTION SHEET ──────────────────────────────────
+// Step 1: choose posts
+// Step 2: set inscription duration (new — 1min → 72h slider)
+// Step 3: success screen
+
+type InscriptionStep = "posts" | "duration";
 
 export function InscriptionSheet({ onClose }: { onClose: () => void }) {
   const C = useC();
   const { launchInscription } = useElection();
+  const [step,         setStep]         = useState<InscriptionStep>("posts");
   const [allPosts,     setAllPosts]     = useState(true);
   const [selectedPost, setSelectedPost] = useState<PostId>("president");
+  const [durationSecs, setDurationSecs] = useState(3600); // 1h default
   const [success,      setSuccess]      = useState(false);
 
   const handleConfirm = async () => {
     const posts: PostId[] = allPosts
       ? POSTS.map(p => p.id)
       : [selectedPost];
-    await launchInscription(posts);
+    await launchInscription(posts, durationSecs);
     setSuccess(true);
   };
 
@@ -363,25 +460,52 @@ export function InscriptionSheet({ onClose }: { onClose: () => void }) {
 
   return (
     <Sheet onClose={onClose}>
-      <div style={{ overflowY: "auto", flex: 1 }}>
-        <SheetTitle>Lancer la phase d'inscription</SheetTitle>
-        <SheetSub>Choisissez les postes ouverts aux candidatures.</SheetSub>
+      {/* ── Step 1: Posts ── */}
+      {step === "posts" && (
+        <>
+          <div style={{ overflowY: "auto", flex: 1 }}>
+            <SheetTitle>Lancer la phase d'inscription</SheetTitle>
+            <SheetSub>Choisissez les postes ouverts aux candidatures.</SheetSub>
+            <PostToggle
+              allPosts={allPosts}
+              setAllPosts={setAllPosts}
+              selectedPost={selectedPost}
+              setSelectedPost={setSelectedPost}
+            />
+          </div>
+          <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
+            <ConfirmBtn
+              label="Continuer"
+              color={C.gold}
+              onClick={() => setStep("duration")}
+            />
+          </div>
+        </>
+      )}
 
-        <PostToggle
-          allPosts={allPosts}
-          setAllPosts={setAllPosts}
-          selectedPost={selectedPost}
-          setSelectedPost={setSelectedPost}
-        />
-      </div>
-
-      <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
-        <ConfirmBtn
-          label="Lancer la phase d'inscription"
-          color={C.gold}
-          onClick={handleConfirm}
-        />
-      </div>
+      {/* ── Step 2: Duration ── */}
+      {step === "duration" && (
+        <>
+          <div style={{ overflowY: "auto", flex: 1 }}>
+            <BackBtn onClick={() => setStep("posts")} />
+            <SheetTitle>Durée des inscriptions</SheetTitle>
+            <SheetSub>
+              Combien de temps les candidatures resteront-elles ouvertes ? Le compteur démarrera dès la confirmation.
+            </SheetSub>
+            <InscriptionDurationSlider
+              value={durationSecs}
+              onChange={setDurationSecs}
+            />
+          </div>
+          <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
+            <ConfirmBtn
+              label="Lancer les inscriptions"
+              color={C.gold}
+              onClick={handleConfirm}
+            />
+          </div>
+        </>
+      )}
     </Sheet>
   );
 }
@@ -552,289 +676,208 @@ interface CandidacySheetProps {
 
 export function CandidacySheet({ user, onClose, onGoToComm, onBadgeGranted }: CandidacySheetProps) {
   const C = useC();
-  const { election, submitCandidacy, candidatesForPost } = useElection();
-  const [selectedPost, setSelectedPost] = useState<PostId>("president");
-  const [step,         setStep]         = useState<"pick" | "confirm" | "success">("pick");
-  const [errMsg,       setErrMsg]       = useState<string | null>(null);
-  const [loading,      setLoading]      = useState(false);
+  const { election, submitCandidacy, candidatesForPost, inscriptionSecsLeft } = useElection();
 
-  // Show all posts when openPosts is unset OR empty (freshly created election defaults to all)
-  const openPosts = (election?.openPosts && election.openPosts.length > 0)
-    ? election.openPosts
-    : POSTS.map(p => p.id);
-  const availablePosts = POSTS.filter(p => openPosts.includes(p.id)).slice().reverse();
-  const postLabel = POSTS.find(p => p.id === selectedPost)?.label ?? "";
+  const [selectedPost,      setSelectedPost]      = useState<PostId | null>(null);
+  const [loading,           setLoading]           = useState(false);
+  const [error,             setError]             = useState<string | null>(null);
+  const [success,           setSuccess]           = useState(false);
+  const [inscriptionClosed, setInscriptionClosed] = useState(false);
 
-  // Check if user is already a candidate for any post
-  const alreadyCandidate = POSTS.some(p =>
-    candidatesForPost(p.id).some(c => c.userId === user.id)
-  );
+  // Live check: close registrations when timer hits zero
+  useEffect(() => {
+    if (!election?.inscriptionEndsAt) return;
+    const update = () => setInscriptionClosed(inscriptionSecsLeft() === 0);
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [election?.inscriptionEndsAt, inscriptionSecsLeft]);
 
-  const handleConfirm = async () => {
+  if (!election || election.status !== "inscription") return null;
+
+  const openPosts = POSTS.filter(p => election.openPosts.includes(p.id));
+
+  const handleSubmit = async () => {
+    if (!selectedPost) return;
     setLoading(true);
-    setErrMsg(null);
-    const { error } = await submitCandidacy(selectedPost, user);
+    setError(null);
+    const { error: err } = await submitCandidacy(selectedPost, user);
     setLoading(false);
-    if (error === "already_candidate") {
-      setErrMsg("Vous êtes déjà candidat·e pour ce poste.");
+    if (err) {
+      setError(
+        err === "already_candidate" ? "Vous êtes déjà candidat·e pour ce poste." :
+        err === "cep_cannot_candidate" ? "Les membres du CEP ne peuvent pas se présenter." :
+        "Une erreur est survenue. Réessayez."
+      );
       return;
     }
-    if (error) {
-      setErrMsg("Une erreur est survenue. Veuillez réessayer.");
-      return;
-    }
-    onBadgeGranted(); // update local user state so badge shows immediately
-    setStep("success");
+    onBadgeGranted();
+    setSuccess(true);
   };
 
-  if (alreadyCandidate && step === "pick") {
+  if (success) {
+    const post = POSTS.find(p => p.id === selectedPost);
+    const commText = `Je me présente pour le poste de ${post?.label ?? selectedPost} ! Voici ma vision pour notre faculté…`;
     return (
-      <Sheet onClose={onClose}>
-        <div style={{ padding: "20px 24px 32px", textAlign: "center" }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>🏅</div>
-          <div style={{ fontWeight: 700, fontSize: 18, color: C.text, marginBottom: 8 }}>
-            Vous êtes déjà candidat·e
-          </div>
-          <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, marginBottom: 24 }}>
-            Votre candidature a déjà été soumise. Bonne campagne !
-          </div>
-          <button onClick={onClose} style={{
-            width: "100%", padding: "14px", borderRadius: 14,
-            border: `1.5px solid ${C.border2}`, background: C.card,
-            color: C.text, fontFamily: "var(--f-sans)", fontSize: 14,
-            fontWeight: 600, cursor: "pointer",
-          }}>
-            Fermer
-          </button>
-        </div>
-      </Sheet>
-    );
-  }
-
-  if (step === "success") {
-    return (
-      <Sheet>
-        <div style={{ padding: "20px 24px 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 14, textAlign: "center" }}>
-          {/* Gold badge icon */}
-          <div style={{
-            width: 72, height: 72, borderRadius: "50%",
-            background: C.goldBg, border: `2px solid ${C.gold}55`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            animation: "checkPop .4s cubic-bezier(.2,.8,.3,1) both",
-          }}>
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="8" r="5" fill={C.gold} opacity=".25"/>
-              <path d="M12 3l1.5 4.5h4.5l-3.5 2.5 1.5 4.5L12 12l-4 2.5 1.5-4.5L6 7.5h4.5z" fill={C.gold}/>
-            </svg>
-          </div>
-
-          <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>
-            Candidature réussie !
-          </div>
-          <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, maxWidth: 280 }}>
-            Un badge en or vous a été attribué pour la durée de votre campagne.
-            Présentez-vous à la communauté de votre faculté !
-          </div>
-          <div style={{
-            padding: "10px 16px",
-            background: C.goldBg, border: `1px solid ${C.gold}44`,
-            borderRadius: 10, fontSize: 13, color: C.gold, fontWeight: 600,
-            width: "100%",
-          }}>
-            Poste : {postLabel}
-          </div>
-        </div>
-
-        <div style={{ padding: "12px 20px 32px", display: "flex", flexDirection: "column", gap: 10 }}>
-          <button
-            onClick={() => {
-              const template =
-                `🗳️ Je suis candidat·e au poste de ${postLabel} !\n\n` +
-                `Bonjour à tous, je me présente : ${user.prenom} ${user.nom}, ` +
-                `étudiant·e en ${user.field} — ${user.faculty}.\n\n` +
-                `Voici pourquoi je souhaite occuper ce poste et ce que j'apporterai à notre promotion :\n\n` +
-                `[Rédigez votre message de campagne ici]\n\n` +
-                `Comptez sur moi ! 🙌`;
-              onClose();
-              onGoToComm(template);
-            }}
-            style={{
-              width: "100%", padding: "14px", borderRadius: 14,
-              border: "none", background: C.gold,
-              color: "#fff", fontFamily: "var(--f-sans)",
-              fontSize: 14, fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            Commencer maintenant →
-          </button>
-          <button
-            onClick={onClose}
-            style={{
-              width: "100%", padding: "14px", borderRadius: 14,
-              border: `1.5px solid ${C.border2}`, background: C.card,
-              color: C.text, fontFamily: "var(--f-sans)",
-              fontSize: 14, fontWeight: 600, cursor: "pointer",
-            }}
-          >
-            Plus tard
-          </button>
-        </div>
-      </Sheet>
+      <SuccessScreen
+        title="Candidature enregistrée !"
+        sub="Votre candidature a été enregistrée. Partagez votre vision avec la communauté."
+        onDismiss={() => {
+          onClose();
+          onGoToComm(commText);
+        }}
+      />
     );
   }
 
   return (
-    <Sheet onClose={step === "pick" ? onClose : undefined}>
-      {step === "pick" && (
-        <>
-          <div style={{ overflowY: "auto", flex: 1 }}>
-            <SheetTitle>Vous voulez être candidat·e</SheetTitle>
-            <SheetSub>Choisissez le poste pour lequel vous souhaitez vous présenter.</SheetSub>
+    <Sheet onClose={onClose}>
+      <div style={{ overflowY: "auto", flex: 1 }}>
+        <SheetTitle>Se porter candidat·e</SheetTitle>
+        <SheetSub>
+          {inscriptionClosed
+            ? "La période de candidature est terminée. Les inscriptions sont closes."
+            : "Choisissez le poste pour lequel vous souhaitez vous présenter."}
+        </SheetSub>
 
-            <div style={{ padding: "0 20px", display: "flex", flexDirection: "column", gap: 10 }}>
-              {availablePosts.map(p => {
-                const active = selectedPost === p.id;
-                const candCount = candidatesForPost(p.id).length;
-                return (
-                  <div
-                    key={p.id}
-                    onClick={() => setSelectedPost(p.id)}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 14,
-                      padding: "13px 16px", borderRadius: 14,
-                      border: `1.5px solid ${active ? C.gold : C.border}`,
-                      background: active ? C.goldBg : C.card,
-                      cursor: "pointer",
-                      transition: "border-color .15s, background .15s",
-                    }}
-                  >
-                    {/* Radio circle */}
-                    <div style={{
-                      width: 22, height: 22, borderRadius: "50%",
-                      border: `2px solid ${active ? C.gold : C.border2}`,
-                      background: active ? C.gold : "transparent",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      flexShrink: 0, transition: "all .15s",
-                    }}>
-                      {active && (
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                          <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2"
-                            strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      )}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14, color: active ? C.gold : C.text }}>
-                        {p.label}
-                      </div>
-                      <div style={{ fontSize: 11, color: C.sub, marginTop: 2 }}>
-                        {candCount} candidat{candCount !== 1 ? "s" : ""} inscrit{candCount !== 1 ? "s" : ""}
-                      </div>
-                    </div>
+        {/* Closed banner */}
+        {inscriptionClosed && (
+          <div style={{
+            margin: "0 20px 16px",
+            padding: "12px 16px",
+            borderRadius: 12,
+            background: C.none,
+            border: `1px solid ${C.border2}`,
+            display: "flex", alignItems: "center", gap: 10,
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+              <rect x="3" y="11" width="18" height="11" rx="2" stroke={C.dim} strokeWidth="1.7"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke={C.dim} strokeWidth="1.7" strokeLinecap="round"/>
+            </svg>
+            <span style={{ fontSize: 13, color: C.sub, lineHeight: 1.4 }}>
+              Les candidatures sont closes.
+            </span>
+          </div>
+        )}
+
+        <div style={{ padding: "0 20px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+          {openPosts.map((post, i) => {
+            const cands = candidatesForPost(post.id);
+            const alreadyIn = cands.some(c => c.userId === user.id);
+            const isSelected = selectedPost === post.id;
+            const color = candidateColor(cands.length);
+            const isDisabled = alreadyIn || inscriptionClosed;
+
+            return (
+              <div
+                key={post.id}
+                onClick={() => { if (!isDisabled) setSelectedPost(post.id); }}
+                style={{
+                  padding: "14px 16px",
+                  borderRadius: 14,
+                  border: `1.5px solid ${isDisabled ? C.border : isSelected ? color : C.border}`,
+                  background: isDisabled ? C.bg : isSelected ? `${color}11` : C.card,
+                  cursor: isDisabled ? "not-allowed" : "pointer",
+                  opacity: isDisabled ? 0.45 : 1,
+                  transition: "border-color .15s, background .15s",
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: isDisabled ? C.dim : isSelected ? color : C.text }}>
+                    {post.label}
                   </div>
-                );
-              })}
-            </div>
-
-            {errMsg && (
-              <div style={{ margin: "12px 20px 0", padding: "10px 14px", borderRadius: 10, background: "#FDF1EF", color: "#C8250E", fontSize: 13 }}>
-                {errMsg}
+                  <div style={{ fontSize: 11, color: C.sub, marginTop: 2 }}>
+                    {cands.length} candidat{cands.length !== 1 ? "s" : ""}
+                  </div>
+                </div>
+                {alreadyIn && (
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.dim, letterSpacing: ".5px", textTransform: "uppercase" }}>
+                    Inscrit·e
+                  </div>
+                )}
+                {isSelected && !isDisabled && (
+                  <div style={{
+                    width: 22, height: 22, borderRadius: "50%",
+                    background: color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                  }}>
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })}
+        </div>
 
-          <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
-            <ConfirmBtn
-              label="Continuer"
-              color={C.gold}
-              onClick={() => setStep("confirm")}
-            />
+        {error && (
+          <div style={{ margin: "0 20px 16px", padding: "10px 14px", borderRadius: 10, background: "#FDF1EF", color: "#C8250E", fontSize: 13 }}>
+            {error}
           </div>
-        </>
-      )}
+        )}
+      </div>
 
-      {step === "confirm" && (
-        <>
-          <div style={{ flex: 1, padding: "8px 20px 0", overflowY: "auto" }}>
-            <BackBtn onClick={() => setStep("pick")} />
-            <div style={{ textAlign: "center", padding: "12px 0" }}>
-              <div style={{ fontWeight: 600, fontSize: 16, color: C.text, marginBottom: 6 }}>
-                Vous voulez être candidat·e pour le poste de
-              </div>
-              <div style={{
-                fontWeight: 700, fontSize: 18, color: C.gold,
-                padding: "12px 20px",
-                background: C.goldBg, borderRadius: 12,
-                margin: "0 auto", maxWidth: 300,
-              }}>
-                {postLabel}
-              </div>
-              <div style={{ fontSize: 12, color: C.sub, marginTop: 12, lineHeight: 1.6 }}>
-                Votre candidature sera visible par tous les membres de votre promotion.
-                Un badge en or vous sera attribué dès confirmation.
-              </div>
-            </div>
-          </div>
-
-          <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
-            <ConfirmBtn
-              label={loading ? "En cours…" : "Confirmer ma candidature"}
-              color={C.gold}
-              disabled={loading}
-              onClick={handleConfirm}
-            />
-          </div>
-        </>
-      )}
+      <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
+        <ConfirmBtn
+          label={
+            inscriptionClosed ? "Candidatures closes" :
+            loading ? "Enregistrement…" :
+            "Confirmer ma candidature"
+          }
+          color={selectedPost && !inscriptionClosed ? candidateColor(candidatesForPost(selectedPost).length) : undefined}
+          onClick={handleSubmit}
+          disabled={!selectedPost || loading || inscriptionClosed}
+        />
+      </div>
     </Sheet>
   );
 }
 
-// ─── VOTER: REAL VOTE SHEET ──────────────────────────────────
-// Extends the existing VoteSheet logic but uses real DB candidates
-// and calls castVote() instead of local state.
+// ─── CEP: REAL VOTE SHEET ────────────────────────────────────
 
 interface RealVoteSheetProps {
-  user:               UserProfile;
-  postId:             PostId;
-  onClose:            () => void;
+  user:    UserProfile;
+  postId:  PostId;
+  onClose: () => void;
   initialCandidateId?: string; // when set, opens directly on the confirm step
 }
 
 export function RealVoteSheet({ user, postId, onClose, initialCandidateId }: RealVoteSheetProps) {
   const C = useC();
-  const { candidatesForPost, castVote, myVotes, profilePhotos } = useElection();
-  const candidates = candidatesForPost(postId)
-    .slice()
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const postLabel  = POSTS.find(p => p.id === postId)?.label ?? "";
+  const { candidatesForPost, castVote, votesForPost, profilePhotos } = useElection();
+
+  const cands     = candidatesForPost(postId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const myVotes   = votesForPost(postId);
+  const alreadyVoted = myVotes.length > 0;
+
   const [selected, setSelected] = useState<string | null>(initialCandidateId ?? null);
   const [step,     setStep]     = useState<"pick" | "confirm" | "done">(
     initialCandidateId ? "confirm" : "pick"
   );
   const [loading,  setLoading]  = useState(false);
-  const [errMsg,   setErrMsg]   = useState<string | null>(null);
-  const [countdown,setCountdown]= useState(5);
+  const [error,    setError]    = useState<string | null>(null);
+  const [countdown, setCountdown] = useState(5);
 
-  const alreadyVoted = myVotes.some(v => v.postId === postId);
-  const selectedCand = candidates.find(c => c.id === selected);
-
-  // Auto-dismiss "done" after 5s
   useEffect(() => {
     if (step !== "done") return;
-    const iv = setInterval(() => setCountdown(p => {
-      if (p <= 1) { clearInterval(iv); onClose(); return 0; }
-      return p - 1;
-    }), 1000);
+    const iv = setInterval(() => {
+      setCountdown(p => {
+        if (p <= 1) { clearInterval(iv); setTimeout(onClose, 0); return 0; }
+        return p - 1;
+      });
+    }, 1000);
     return () => clearInterval(iv);
   }, [step, onClose]);
 
+  // ── Already voted: show the candidate they picked + +1 animation ──
   if (alreadyVoted) {
-    const votedCandId = myVotes.find(v => v.postId === postId)?.candidateId;
-    const votedCand   = candidates.find(c => c.id === votedCandId);
-    const ci          = votedCand ? candidates.findIndex(c => c.id === votedCand.id) : 0;
+    const votedCandId = myVotes[0]?.candidateId;
+    const votedCand   = cands.find(c => c.id === votedCandId);
+    const ci          = votedCand ? cands.findIndex(c => c.id === votedCand.id) : 0;
     const clr         = candidateColor(ci >= 0 ? ci : 0);
     const photo       = votedCand ? profilePhotos[votedCand.userId] : undefined;
+    const postLabel   = POSTS.find(p => p.id === postId)?.label ?? "";
     return (
       <Sheet onClose={onClose}>
         <div style={{ padding: "16px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, flex: 1 }}>
@@ -875,216 +918,211 @@ export function RealVoteSheet({ user, postId, onClose, initialCandidateId }: Rea
     );
   }
 
-  const handleVote = async () => {
+  const selectedCand = cands.find(c => c.id === selected);
+  const selectedColor = selectedCand ? candidateColor(cands.indexOf(selectedCand)) : C.gold;
+
+  const handleConfirm = async () => {
     if (!selected) return;
     setLoading(true);
-    const { error } = await castVote(selected, postId, user);
+    const { error: err } = await castVote(selected, postId, user);
     setLoading(false);
-    if (error) { setErrMsg("Erreur lors du vote. Veuillez réessayer."); return; }
+    if (err) {
+      setError(
+        err === "already_voted" ? "Vous avez déjà voté pour ce poste." :
+        err === "cep_cannot_vote" ? "Les membres du CEP ne votent pas." :
+        "Erreur lors du vote. Réessayez."
+      );
+      return;
+    }
     setStep("done");
   };
 
   return (
-    <Sheet onClose={step === "pick" ? onClose : undefined}>
-      {/* Step 1: Pick */}
+    <Sheet onClose={step !== "done" ? onClose : undefined}>
       {step === "pick" && (
         <>
-          <div style={{ overflowY: "auto", flex: 1 }}>
-            <SheetTitle>Voter — {postLabel}</SheetTitle>
-            <SheetSub>Sélectionnez votre candidat·e.</SheetSub>
-
-            {candidates.length === 0 ? (
-              <div style={{ padding: "24px 20px", textAlign: "center", color: C.sub, fontSize: 14 }}>
-                Aucun candidat inscrit pour ce poste.
-              </div>
-            ) : (
-              <div style={{ padding: "0 20px", display: "flex", flexDirection: "column", gap: 10 }}>
-                {candidates.map((c, ci) => {
-                  const active    = selected === c.id;
-                  const colorFor  = candidateColor(ci);
-                  return (
-                    <div
-                      key={c.id}
-                      onClick={() => setSelected(c.id)}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 14,
-                        padding: "14px 16px", borderRadius: 14,
-                        border: `1.5px solid ${active ? colorFor : C.border}`,
-                        background: active ? `${colorFor}11` : C.card,
-                        cursor: "pointer",
-                        transition: "border-color .15s, background .15s",
-                      }}
-                    >
-                      {/* Radio */}
-                      <div style={{
-                        width: 22, height: 22, borderRadius: "50%",
-                        border: `2px solid ${active ? colorFor : C.border2}`,
-                        background: active ? colorFor : "transparent",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        flexShrink: 0, transition: "all .15s",
-                      }}>
-                        {active && (
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                            <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2"
-                              strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        )}
-                      </div>
-                      {/* Avatar — profile photo if available, fallback to initials ring */}
-                      <div style={{
-                        width: 40, height: 40, borderRadius: "50%",
-                        background: `${colorFor}18`, border: `2px solid ${colorFor}44`,
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        flexShrink: 0, overflow: "hidden",
-                      }}>
-                        {profilePhotos[c.userId] ? (
-                          <img
-                            src={profilePhotos[c.userId]}
-                            alt={c.userName}
-                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                          />
-                        ) : (
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                            <circle cx="12" cy="8.5" r="3.5" fill={colorFor} opacity=".5"/>
-                            <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={colorFor} opacity=".4"/>
-                          </svg>
-                        )}
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{c.userName}</div>
-                      </div>
+          <div style={{ padding: "8px 20px 0", overflowY: "auto", flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 17, color: C.text, marginBottom: 4 }}>
+              Choisissez votre candidat·e
+            </div>
+            <div style={{ fontSize: 11, color: C.sub, marginBottom: 16 }}>
+              Sélectionnez un candidat pour continuer
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {cands.map((cand, i) => {
+                const color = candidateColor(i);
+                const isSelected = selected === cand.id;
+                const photo = profilePhotos[cand.userId];
+                return (
+                  <div
+                    key={cand.id}
+                    onClick={() => setSelected(cand.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 14,
+                      padding: "14px 16px", borderRadius: 14,
+                      border: `1.5px solid ${isSelected ? color : C.border}`,
+                      background: isSelected ? `${color}11` : C.card,
+                      cursor: "pointer", transition: "border-color .15s, background .15s",
+                    }}
+                  >
+                    <div style={{
+                      width: 22, height: 22, borderRadius: "50%",
+                      border: `2px solid ${isSelected ? color : C.border2}`,
+                      background: isSelected ? color : "transparent",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      flexShrink: 0, transition: "all .15s",
+                    }}>
+                      {isSelected && (
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                          <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {errMsg && (
-              <div style={{ margin: "12px 20px 0", padding: "10px 14px", borderRadius: 10, background: "#FDF1EF", color: "#C8250E", fontSize: 13 }}>
-                {errMsg}
+                    {photo ? (
+                      <img src={photo} alt={cand.userName} style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                    ) : (
+                      <div style={{
+                        width: 46, height: 46, borderRadius: "50%",
+                        background: `${color}18`, border: `2px solid ${color}44`,
+                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                      }}>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                          <circle cx="12" cy="8.5" r="3.5" fill={color} opacity=".5"/>
+                          <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={color} opacity=".4"/>
+                        </svg>
+                      </div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{cand.userName}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {error && (
+              <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "#FDF1EF", color: "#C8250E", fontSize: 13 }}>
+                {error}
               </div>
             )}
           </div>
-
-          <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
-            <ConfirmBtn
-              label="Continuer"
-              disabled={!selected || candidates.length === 0}
-              onClick={() => setStep("confirm")}
-            />
+          <div style={{ padding: "16px 20px 28px", flexShrink: 0 }}>
+            <button
+              onClick={() => selected && setStep("confirm")}
+              disabled={!selected}
+              style={{
+                width: "100%", padding: "15px", borderRadius: 14, border: "none",
+                background: selected ? C.text : C.border,
+                color: selected ? C.bg : C.sub,
+                fontFamily: "var(--f-sans)", fontSize: 15, fontWeight: 600,
+                cursor: selected ? "pointer" : "not-allowed", transition: "background .2s, color .2s",
+              }}
+            >
+              Continuer
+            </button>
           </div>
         </>
       )}
 
-      {/* Step 2: Confirm */}
-      {step === "confirm" && selectedCand && (
+      {step === "confirm" && (
         <>
-          <div style={{ flex: 1, padding: "8px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 14, overflowY: "auto" }}>
-            <BackBtn onClick={() => setStep("pick")} />
+          <div style={{ padding: "8px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 14, overflowY: "auto", flex: 1 }}>
+            <div style={{ width: "100%" }}>
+              <button onClick={() => setStep("pick")} style={{ background: "none", border: "none", color: C.sub, fontFamily: "var(--f-sans)", fontSize: 13, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 4 }}>
+                ← Retour
+              </button>
+            </div>
             <div style={{ fontWeight: 600, fontSize: 17, color: C.text, textAlign: "center" }}>
               Vous voulez voter pour
             </div>
-            {(() => {
-              const ci = candidates.findIndex(c => c.id === selectedCand.id);
-              const clr = candidateColor(ci >= 0 ? ci : 0);
-              const photo = profilePhotos[selectedCand.userId];
-              return (
-                <div style={{
-                  width: 80, height: 80, borderRadius: "50%",
-                  background: `${clr}18`, border: `2px solid ${clr}44`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  overflow: "hidden",
-                }}>
-                  {photo ? (
-                    <img
-                      src={photo}
-                      alt={selectedCand.userName}
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                    />
-                  ) : (
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                      <circle cx="12" cy="8.5" r="3.5" fill={clr} opacity=".5"/>
-                      <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={clr} opacity=".4"/>
-                    </svg>
-                  )}
-                </div>
-              );
-            })()}
-            <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>{selectedCand.userName}</div>
-            <div style={{ fontSize: 12, color: C.sub }}>{postLabel}</div>
+            <div style={{
+              width: 72, height: 72, borderRadius: "50%",
+              background: `${selectedColor}18`, border: `2px solid ${selectedColor}44`,
+              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+            }}>
+              {selectedCand && profilePhotos[selectedCand.userId] ? (
+                <img src={profilePhotos[selectedCand.userId]} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+              ) : (
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="8.5" r="3.5" fill={selectedColor} opacity=".5"/>
+                  <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={selectedColor} opacity=".4"/>
+                </svg>
+              )}
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>{selectedCand?.userName}</div>
+            </div>
+            {error && (
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: "#FDF1EF", color: "#C8250E", fontSize: 13, width: "100%" }}>
+                {error}
+              </div>
+            )}
           </div>
-
-          <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
-            <ConfirmBtn
-              label={loading ? "En cours…" : "Voter"}
+          <div style={{ padding: "16px 20px 28px", flexShrink: 0 }}>
+            <button
+              onClick={handleConfirm}
               disabled={loading}
-              color={candidateColor(candidates.findIndex(c => c.id === selectedCand.id))}
-              onClick={handleVote}
-            />
+              style={{
+                width: "100%", padding: "15px", borderRadius: 14, border: "none",
+                background: loading ? C.border : selectedColor,
+                color: loading ? C.sub : "#fff",
+                fontFamily: "var(--f-sans)", fontSize: 15, fontWeight: 600,
+                cursor: loading ? "not-allowed" : "pointer",
+              }}
+            >
+              {loading ? "Vote en cours…" : "Votez"}
+            </button>
           </div>
         </>
       )}
 
-      {/* Step 3: Done */}
-      {step === "done" && selectedCand && (() => {
-        const ci    = candidates.findIndex(c => c.id === selectedCand.id);
-        const clr   = candidateColor(ci >= 0 ? ci : 0);
-        const photo = profilePhotos[selectedCand.userId];
-        return (
-          <>
-            <div style={{ flex: 1, padding: "16px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, overflowY: "auto" }}>
-              {/* Candidate avatar — photo or SVG fallback */}
-              <div style={{
-                width: 72, height: 72, borderRadius: "50%",
-                background: `${clr}18`, border: `2px solid ${clr}44`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                overflow: "hidden", flexShrink: 0,
-              }}>
-                {photo ? (
-                  <img src={photo} alt={selectedCand.userName} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                ) : (
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="8.5" r="3.5" fill={clr} opacity=".5"/>
-                    <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={clr} opacity=".4"/>
-                  </svg>
-                )}
-              </div>
-              {/* Name + post */}
-              <div style={{ textAlign: "center" }}>
-                <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>{selectedCand.userName}</div>
-                <div style={{ fontSize: 12, color: C.sub, marginTop: 3 }}>{postLabel}</div>
-              </div>
-              {/* Animated +1 */}
-              <div style={{
-                fontFamily: "var(--f-mono)",
-                fontSize: 36, fontWeight: 700,
-                color: clr,
-                animation: "plusOne .5s cubic-bezier(.2,.8,.3,1) both",
-                letterSpacing: "-1px",
-              }}>
-                +1
-              </div>
+      {step === "done" && (
+        <>
+          <div style={{ padding: "16px 20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, overflowY: "auto", flex: 1 }}>
+            <div style={{
+              width: 72, height: 72, borderRadius: "50%",
+              background: `${selectedColor}18`, border: `2px solid ${selectedColor}44`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              overflow: "hidden", flexShrink: 0,
+            }}>
+              {selectedCand && profilePhotos[selectedCand.userId] ? (
+                <img src={profilePhotos[selectedCand.userId]} alt={selectedCand.userName} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="8.5" r="3.5" fill={selectedColor} opacity=".5"/>
+                  <path d="M5 20c0-3.5 3.1-6.5 7-6.5s7 3 7 6.5" fill={selectedColor} opacity=".4"/>
+                </svg>
+              )}
             </div>
-            <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
-              <button onClick={onClose} style={{
-                width: "100%", padding: "14px", borderRadius: 14,
-                border: `1.5px solid ${C.border2}`, background: C.card,
-                color: C.text, fontFamily: "var(--f-sans)",
-                fontSize: 14, fontWeight: 600, cursor: "pointer",
-              }}>
-                Terminé ({countdown}s)
-              </button>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontWeight: 700, fontSize: 20, color: C.text }}>{selectedCand?.userName}</div>
+              <div style={{ fontSize: 12, color: C.sub, marginTop: 3 }}>{POSTS.find(p => p.id === postId)?.label ?? ""}</div>
             </div>
-          </>
-        );
-      })()}
+            <div style={{
+              fontFamily: "var(--f-mono)", fontSize: 36, fontWeight: 700,
+              color: selectedColor, animation: "plusOne .5s cubic-bezier(.2,.8,.3,1) both", letterSpacing: "-1px",
+            }}>
+              +1
+            </div>
+          </div>
+          <div style={{ padding: "16px 20px 28px", flexShrink: 0 }}>
+            <button
+              onClick={onClose}
+              style={{
+                width: "100%", padding: "15px", borderRadius: 14,
+                border: `1.5px solid ${C.border2}`, background: C.card, color: C.text,
+                fontFamily: "var(--f-sans)", fontSize: 15, fontWeight: 600, cursor: "pointer",
+              }}
+            >
+              Terminé ({countdown}s)
+            </button>
+          </div>
+        </>
+      )}
     </Sheet>
   );
 }
 
-
-// ─── CEP: RESET / NEW ELECTION SHEET ────────────────────────
-// Shown when status is "past". Lets CEP start a fresh election cycle.
+// ─── CEP: RESET ELECTION SHEET ───────────────────────────────
 
 export function ResetElectionSheet({ onClose }: { onClose: () => void }) {
   const C = useC();
@@ -1092,7 +1130,7 @@ export function ResetElectionSheet({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const handleConfirm = async () => {
+  const handleReset = async () => {
     setLoading(true);
     await resetElection();
     setLoading(false);
@@ -1102,8 +1140,8 @@ export function ResetElectionSheet({ onClose }: { onClose: () => void }) {
   if (success) {
     return (
       <SuccessScreen
-        title="Nouvelle élection prête !"
-        sub="Les résultats précédents ont été archivés. Vous pouvez lancer les inscriptions pour le prochain scrutin."
+        title="Élection réinitialisée"
+        sub="Toutes les données ont été effacées. Vous pouvez lancer un nouveau cycle."
         onDismiss={onClose}
       />
     );
@@ -1111,37 +1149,35 @@ export function ResetElectionSheet({ onClose }: { onClose: () => void }) {
 
   return (
     <Sheet onClose={onClose}>
-      <div style={{ overflowY: "auto", flex: 1 }}>
-        <SheetTitle>Démarrer une nouvelle élection</SheetTitle>
+      <div style={{ padding: "8px 20px 0", flex: 1 }}>
+        <SheetTitle>Réinitialiser l'élection</SheetTitle>
         <SheetSub>
-          Les résultats actuels seront conservés dans l'historique.
-          Les candidatures et les votes seront réinitialisés pour permettre un nouveau cycle électoral.
+          Cette action efface tous les votes, candidatures et résultats. Elle est irréversible.
         </SheetSub>
 
         {/* Warning card */}
-        <div style={{ margin: "0 20px 16px" }}>
-          <div style={{
-            padding: "14px 16px", borderRadius: 12,
-            background: "#FDF6E3", border: "1px solid #C47F0044",
-          }}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: "#C47F00", marginBottom: 6 }}>
-              ⚠️ Cette action va :
-            </div>
-            <div style={{ fontSize: 12, color: "#6B6A64", lineHeight: 1.7 }}>
-              • Supprimer tous les votes du scrutin précédent<br/>
-              • Révoquer les badges des candidats<br/>
-              • Remettre le statut à « Élections à venir »
-            </div>
+        <div style={{
+          margin: "0 0 20px",
+          padding: "14px 16px",
+          borderRadius: 14,
+          border: `1.5px solid #C8250E44`,
+          background: "#FDF1EF",
+        }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: "#C8250E", marginBottom: 4 }}>
+            ⚠️ Action irréversible
+          </div>
+          <div style={{ fontSize: 12, color: "#C8250E", opacity: 0.8, lineHeight: 1.5 }}>
+            Tous les votes et candidatures seront définitivement supprimés. Les badges et rôles seront réinitialisés.
           </div>
         </div>
       </div>
 
       <div style={{ padding: "16px 20px 32px", flexShrink: 0 }}>
         <ConfirmBtn
-          label={loading ? "Réinitialisation…" : "Lancer un nouveau cycle"}
-          color="#C47F00"
+          label={loading ? "Réinitialisation…" : "Confirmer la réinitialisation"}
+          color="#C8250E"
+          onClick={handleReset}
           disabled={loading}
-          onClick={handleConfirm}
         />
       </div>
     </Sheet>

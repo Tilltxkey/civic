@@ -57,37 +57,39 @@ export interface VoteRecord {
   createdAt:   string;
 }
 export interface ElectionRecord {
-  id:            string;
-  category:      string;
-  status:        ElectionStatus;
-  mode:          ElectionMode | null;
-  activePostId:  PostId | null;
-  openPosts:     PostId[];
-  timers:        PostTimer[];
-  createdAt:     string;
-  updatedAt:     string;
+  id:                  string;
+  category:            string;
+  status:              ElectionStatus;
+  mode:                ElectionMode | null;
+  activePostId:        PostId | null;
+  openPosts:           PostId[];
+  timers:              PostTimer[];
+  inscriptionEndsAt:   string | null;   // ISO timestamp — null when no inscription timer set
+  createdAt:           string;
+  updatedAt:           string;
 }
 interface ElectionCtx {
-  election:          ElectionRecord | null;
-  candidates:        CandidateRecord[];
-  myVotes:           VoteRecord[];
-  allVotes:          VoteRecord[];
-  categorySexCounts: { M: number; F: number };
-  profilePhotos:     Record<string, string>;
-  isCEP:             boolean;
-  loading:           boolean;
-  launchInscription:  (posts: PostId[]) => Promise<void>;
-  launchElection:     (posts: PostId[], mode: ElectionMode, timers: PostTimer[]) => Promise<void>;
-  submitCandidacy:    (postId: PostId, user: UserProfile) => Promise<{ error: string | null }>;
-  castVote:           (candidateId: string, postId: PostId, user: UserProfile) => Promise<{ error: string | null }>;
-  resetElection:      () => Promise<void>;
-  refreshElection:    () => Promise<void>;
-  onUserRefresh?:     () => Promise<void>;
-  categoryOf:         (u: UserProfile) => string;
-  candidatesForPost:  (postId: PostId) => CandidateRecord[];
-  votesForPost:       (postId: PostId) => VoteRecord[];
-  winnerOfPost:       (postId: PostId) => CandidateRecord | null;
-  secondsLeft:        (postId: PostId) => number;
+  election:             ElectionRecord | null;
+  candidates:           CandidateRecord[];
+  myVotes:              VoteRecord[];
+  allVotes:             VoteRecord[];
+  categorySexCounts:    { M: number; F: number };
+  profilePhotos:        Record<string, string>;
+  isCEP:                boolean;
+  loading:              boolean;
+  launchInscription:    (posts: PostId[], durationSecs: number) => Promise<void>;
+  launchElection:       (posts: PostId[], mode: ElectionMode, timers: PostTimer[]) => Promise<void>;
+  submitCandidacy:      (postId: PostId, user: UserProfile) => Promise<{ error: string | null }>;
+  castVote:             (candidateId: string, postId: PostId, user: UserProfile) => Promise<{ error: string | null }>;
+  resetElection:        () => Promise<void>;
+  refreshElection:      () => Promise<void>;
+  onUserRefresh?:       () => Promise<void>;
+  categoryOf:           (u: UserProfile) => string;
+  candidatesForPost:    (postId: PostId) => CandidateRecord[];
+  votesForPost:         (postId: PostId) => VoteRecord[];
+  winnerOfPost:         (postId: PostId) => CandidateRecord | null;
+  secondsLeft:          (postId: PostId) => number;
+  inscriptionSecsLeft:  () => number;
 }
 // ─── HELPERS ────────────────────────────────────────────────
 export function categoryOf(u: UserProfile): string {
@@ -109,10 +111,11 @@ const Ctx = createContext<ElectionCtx>({
   resetElection:     async () => {},
   refreshElection:   async () => {},
   categoryOf,
-  candidatesForPost: () => [],
-  votesForPost:      () => [],
-  winnerOfPost:      () => null,
-  secondsLeft:       () => 0,
+  candidatesForPost:   () => [],
+  votesForPost:        () => [],
+  winnerOfPost:        () => null,
+  secondsLeft:         () => 0,
+  inscriptionSecsLeft: () => 0,
 });
 // ─── PROVIDER ────────────────────────────────────────────────
 export function ElectionProvider({
@@ -144,15 +147,16 @@ export function ElectionProvider({
       .maybeSingle();
     if (elData) {
       const rec: ElectionRecord = {
-        id:           elData.id,
-        category:     elData.category,
-        status:       elData.status,
-        mode:         elData.mode,
-        activePostId: elData.active_post_id,
-        openPosts:    elData.open_posts ?? [],
-        timers:       elData.timers ?? [],
-        createdAt:    elData.created_at,
-        updatedAt:    elData.updated_at,
+        id:                 elData.id,
+        category:           elData.category,
+        status:             elData.status,
+        mode:               elData.mode,
+        activePostId:       elData.active_post_id,
+        openPosts:          elData.open_posts ?? [],
+        timers:             elData.timers ?? [],
+        inscriptionEndsAt:  elData.inscription_ends_at ?? null,
+        createdAt:          elData.created_at,
+        updatedAt:          elData.updated_at,
       };
       setElection(rec);
       const { data: cData } = await supabase
@@ -459,16 +463,18 @@ export function ElectionProvider({
   };
 
   // ── CEP ACTION: Launch inscription phase ────────────────────
-  const launchInscription = useCallback(async (posts: PostId[]) => {
+  const launchInscription = useCallback(async (posts: PostId[], durationSecs: number) => {
     if (!category || !DB_READY || !supabase || !user) return;
+    const inscriptionEndsAt = new Date(Date.now() + durationSecs * 1000).toISOString();
     const existing = election;
     if (existing) {
       await supabase
         .from("civique_elections")
         .update({
-          status:      "inscription",
-          open_posts:  posts,
-          updated_at:  new Date().toISOString(),
+          status:               "inscription",
+          open_posts:           posts,
+          inscription_ends_at:  inscriptionEndsAt,
+          updated_at:           new Date().toISOString(),
         })
         .eq("id", existing.id);
     } else {
@@ -476,13 +482,14 @@ export function ElectionProvider({
       await supabase.from("civique_elections").insert({
         id,
         category,
-        status:          "inscription",
-        mode:            null,
-        active_post_id:  null,
-        open_posts:      posts,
-        timers:          [],
-        created_at:      new Date().toISOString(),
-        updated_at:      new Date().toISOString(),
+        status:               "inscription",
+        mode:                 null,
+        active_post_id:       null,
+        open_posts:           posts,
+        timers:               [],
+        inscription_ends_at:  inscriptionEndsAt,
+        created_at:           new Date().toISOString(),
+        updated_at:           new Date().toISOString(),
       });
     }
     await fetchElection();
@@ -611,7 +618,8 @@ export function ElectionProvider({
       .from("civique_elections")
       .update({
         status: "future", mode: null, active_post_id: null,
-        open_posts: [], timers: [], updated_at: new Date().toISOString(),
+        open_posts: [], timers: [], inscription_ends_at: null,
+        updated_at: new Date().toISOString(),
       })
       .eq("id", election.id);
 
@@ -678,6 +686,12 @@ export function ElectionProvider({
     return Math.max(0, Math.floor((new Date(timer.endsAt).getTime() - Date.now()) / 1000));
   }, [election]);
 
+  // ── Inscription countdown helper ─────────────────────────────
+  const inscriptionSecsLeft = useCallback((): number => {
+    if (!election?.inscriptionEndsAt) return 0;
+    return Math.max(0, Math.floor((new Date(election.inscriptionEndsAt).getTime() - Date.now()) / 1000));
+  }, [election]);
+
   return (
     <Ctx.Provider value={{
       election, candidates, myVotes, allVotes, categorySexCounts, profilePhotos, isCEP, loading,
@@ -688,6 +702,7 @@ export function ElectionProvider({
       votesForPost,
       winnerOfPost,
       secondsLeft,
+      inscriptionSecsLeft,
     }}>
       {children}
     </Ctx.Provider>
