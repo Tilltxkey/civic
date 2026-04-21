@@ -471,6 +471,8 @@ export default function Page() {
   // ── Rehydrate session from localStorage on first mount ───────
   // Reads the saved user ID, fetches fresh data from DB, and
   // restores the session — no login screen needed on reload.
+  // Also checks for civique_post_prefill (set before a candidacy reload)
+  // so the community compose box opens with the draft post on return.
   useEffect(() => {
     const savedId = localStorage.getItem(SESSION_KEY);
     if (!savedId) {
@@ -484,6 +486,15 @@ export default function Page() {
       } else {
         // ID in storage is stale (user deleted, DB reset, etc.) — clear it
         localStorage.removeItem(SESSION_KEY);
+      }
+      // ── Post-candidacy redirect ──────────────────────────────
+      // If a candidacy registration just triggered a reload, restore
+      // the community tab with the pre-filled post draft.
+      const prefill = localStorage.getItem("civique_post_prefill");
+      if (prefill) {
+        localStorage.removeItem("civique_post_prefill");
+        setActiveTab("community");
+        setComposePrefill(prefill);
       }
       setHydrated(true);
     });

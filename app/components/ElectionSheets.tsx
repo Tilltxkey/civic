@@ -521,8 +521,8 @@ export function LaunchElectionSheet({ onClose }: { onClose: () => void }) {
   const [allPosts,     setAllPosts]     = useState(true);
   const [selectedPost, setSelectedPost] = useState<PostId>("president");
   const [mode,         setMode]         = useState<ElectionMode>("sequentiel");
-  const [presidentSecs,   setPresidentSecs]   = useState(3600);  // 1h default
-  const [othersSecs,      setOthersSecs]      = useState(3600);
+  const [presidentSecs,   setPresidentSecs]   = useState(300);  // 5min default
+  const [othersSecs,      setOthersSecs]      = useState(300);
 
   const chosenPosts: PostId[] = allPosts
     ? POSTS.map(p => p.id)
@@ -723,8 +723,10 @@ export function CandidacySheet({ user, onClose, onGoToComm, onBadgeGranted }: Ca
         title="Candidature enregistrée !"
         sub="Votre candidature a été enregistrée. Partagez votre vision avec la communauté."
         onDismiss={() => {
-          onClose();
-          onGoToComm(commText);
+          // Save the prefill + intent to localStorage so page.tsx can restore
+          // after the reload (which re-fetches user with the fresh gold badge).
+          localStorage.setItem("civique_post_prefill", commText);
+          window.location.reload();
         }}
       />
     );
