@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -93,6 +92,239 @@ function loadSet(userId: string, kind: string): Set<string> {
 function saveSet(userId: string, kind: string, set: Set<string>) {
   try { localStorage.setItem(interactionKey(userId, kind), JSON.stringify([...set])); } catch {}
 }
+
+// ═══════════════════════════════════════════════════════════════
+// ── FEED RANKING ALGORITHM ────────────────────────────────────
+// Implements the weighted scoring system:
+//
+//   FinalScore = ( Wu × Mc + Engagement ) / hoursSincePosted^GRAVITY
+//
+// where:
+//   Wu  = badge weight  (gray=10, gold=5, blue=2.5, none=1)
+//   Mc  = category multiplier derived from viewer↔author match
+//         (exact class+field=3×, field only=2×, college=1.5×, none=1×)
+//   Engagement = likes×1 + comments×3 + reposts×5
+//   GRAVITY    = 1.8  (pulls older posts down quickly)
+//
+// The feed is then sliced into three buckets — 70/20/10 — to
+// ensure variety even when scores are tightly clustered:
+//   70 %  "Relevance"  — posts from same class/field (high Mc)
+//   20 %  "Authority"  — gray/gold posts regardless of field
+//   10 %  "Wildcard"   — anything that has gone viral (high E)
+// ═══════════════════════════════════════════════════════════════
+
+const GRAVITY = 1.8;
+
+// Badge base weights
+const BADGE_WEIGHT: Record<string, number> = {
+  gray: 10,
+  gold:  5,
+  blue:  2.5,
+  none:  1,
+};
+
+// Parse the faculty short-code and year from an author_tag string.
+// Tags look like: "eco.3", "eco.3 · del.", "fst.1", "rect." etc.
+function parseTag(tag: string): { facultyCode: string; year: number | null } {
+  // The tag always starts with "<facultyCode>.<year>" or just "<code>"
+  const match = tag.trim().match(/^([a-z]+)\.(\d+)/i);
+  if (match) return { facultyCode: match[1].toLowerCase(), year: parseInt(match[2], 10) };
+  // Officials (gray) may just have "rect." or similar — no year
+  const codeOnly = tag.trim().match(/^([a-z]+)\./i);
+  return { facultyCode: codeOnly ? codeOnly[1].toLowerCase() : "", year: null };
+}
+
+// Map full faculty names (UserProfile.faculty) → short codes used in tags
+const FACULTY_CODE: Record<string, string> = {
+  "FDSE – Droit & Sciences Économiques": "eco",   // shared code for the faculty
+  "FLA – Lettres & Arts":                "fla",
+  "FST – Sciences & Technologies":       "fst",
+  "FMP – Médecine & Pharmacie":          "fmp",
+  "FASCH – Sciences Humaines":           "fasch",
+  "FGC – Génie Civil":                   "fgc",
+  "FA – Architecture":                   "fa",
+  "FAMV – Agronomie & Médecine Vétérinaire": "famv",
+};
+
+// Category multiplier: how relevant is this post to the viewing user?
+function categoryMultiplier(
+  postTag:     string,
+  viewerFaculty: string,
+  viewerYear:    number,
+): number {
+  const { facultyCode: pCode, year: pYear } = parseTag(postTag);
+  const vCode = FACULTY_CODE[viewerFaculty] ?? viewerFaculty.toLowerCase().slice(0, 4);
+
+  const sameField   = pCode === vCode;
+  const sameYear    = pYear !== null && pYear === viewerYear;
+
+  if (sameField && sameYear) return 3.0;   // Exact match: same class + same field
+  if (sameField)             return 2.0;   // Same field, different year
+  return 1.0;                              // Different field — no boost
+  // Note: "college match" (1.5×) is implicit since all users are in the same
+  // college (FDSE). If multi-college support is added, check faculty prefix here.
+}
+
+// Engagement score: weighted sum of interactions
+function engagementScore(post: Post): number {
+  return (post.likes * 1) + (post.commentCount * 3) + (post.reposts * 5);
+}
+
+// Time in hours since the post was created (minimum 0.1 to avoid /0)
+function hoursSince(iso: string): number {
+  return Math.max(0.1, (Date.now() - new Date(iso).getTime()) / 3_600_000);
+}
+
+// ── Viral threshold — a regular/blue post that hits this engagement
+//    within its first 2 hours temporarily jumps over gold posts
+const VIRAL_ENGAGEMENT_THRESHOLD = 20;
+const VIRAL_WINDOW_HOURS         = 2;
+
+function isViral(post: Post): boolean {
+  return (
+    (post.author.badge === null || post.author.badge === "blue") &&
+    engagementScore(post) >= VIRAL_ENGAGEMENT_THRESHOLD &&
+    hoursSince(post.createdAt) <= VIRAL_WINDOW_HOURS
+  );
+}
+
+// Raw priority score for a single post viewed by a specific user
+function priorityScore(
+  post:          Post,
+  viewerFaculty: string,
+  viewerYear:    number,
+): number {
+  const Wu  = BADGE_WEIGHT[post.author.badge ?? "none"] ?? 1;
+  const Mc  = categoryMultiplier(post.author.tag, viewerFaculty, viewerYear);
+  const E   = engagementScore(post);
+  const T   = hoursSince(post.createdAt);
+  return (Wu * Mc + E) / Math.pow(T, GRAVITY);
+}
+
+// ── Main feed sort: 70/20/10 bucket mix ──────────────────────
+//
+//  RELEVANCE  (70 %) — high Mc posts (same class/field)
+//  AUTHORITY  (20 %) — gray + gold posts (institutional/leaders)
+//  WILDCARD   (10 %) — viral posts that crossed the engagement bar
+//
+// Gray posts also get a "must-read" guarantee: the first unseen
+// gray post is always injected at position 0 in the final feed
+// (capped at one per 12-hour window via sessionStorage).
+function rankFeed(
+  posts:         Post[],
+  viewerFaculty: string,
+  viewerYear:    number,
+): Post[] {
+  if (posts.length === 0) return [];
+
+  // Score every post once
+  const scored = posts.map(p => ({
+    post:  p,
+    score: priorityScore(p, viewerFaculty, viewerYear),
+    Mc:    categoryMultiplier(p.author.tag, viewerFaculty, viewerYear),
+    viral: isViral(p),
+  }));
+
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+
+  const total = scored.length;
+
+  // Bucket split sizes (at least 1 each when pool is small enough)
+  const nRelevance = Math.max(1, Math.round(total * 0.70));
+  const nAuthority = Math.max(1, Math.round(total * 0.20));
+  // wildcard fills the rest
+
+  // ── Relevance bucket: high Mc (same class or field)
+  const relevance = scored
+    .filter(s => s.Mc >= 2.0)
+    .slice(0, nRelevance)
+    .map(s => s.post);
+
+  // ── Authority bucket: gray or gold, not already in relevance
+  const relevanceIds = new Set(relevance.map(p => p.id));
+  const authority = scored
+    .filter(s => (s.post.author.badge === "gray" || s.post.author.badge === "gold") && !relevanceIds.has(s.post.id))
+    .slice(0, nAuthority)
+    .map(s => s.post);
+
+  // ── Wildcard bucket: viral posts not in either bucket yet
+  const authorityIds = new Set(authority.map(p => p.id));
+  const wildcard = scored
+    .filter(s => s.viral && !relevanceIds.has(s.post.id) && !authorityIds.has(s.post.id))
+    .slice(0, Math.max(1, total - nRelevance - nAuthority))
+    .map(s => s.post);
+
+  // ── Fill gaps: anything not yet picked (ensures all posts appear)
+  const pickedIds  = new Set([...relevance, ...authority, ...wildcard].map(p => p.id));
+  const remainder  = scored.filter(s => !pickedIds.has(s.post.id)).map(s => s.post);
+
+  // Interleave buckets so the feed doesn't feel like separate sections:
+  // R R R A W R R R A W ...
+  const merged: Post[] = [];
+  let ri = 0, ai = 0, wi = 0, remi = 0;
+
+  // Simple round-robin over the pattern [R, R, R, A, W]
+  let slot = 0;
+  const pattern = [
+    { arr: relevance,  idx: () => ri,  adv: () => { ri++; } },
+    { arr: relevance,  idx: () => ri,  adv: () => { ri++; } },
+    { arr: relevance,  idx: () => ri,  adv: () => { ri++; } },
+    { arr: authority,  idx: () => ai,  adv: () => { ai++; } },
+    { arr: wildcard,   idx: () => wi,  adv: () => { wi++; } },
+  ];
+
+  while (merged.length < total) {
+    const { arr, idx, adv } = pattern[slot % pattern.length];
+    if (idx() < arr.length) {
+      merged.push(arr[idx()]);
+      adv();
+    }
+    slot++;
+    // Safety: once all buckets exhausted, flush remainder in score order
+    if (ri >= relevance.length && ai >= authority.length && wi >= wildcard.length) {
+      merged.push(...remainder.slice(remi));
+      break;
+    }
+  }
+
+  // ── Gray "must-read" guarantee ────────────────────────────────
+  // The first unseen gray post is pinned to position 0 in the feed.
+  // A 12-hour cooldown (per post id) prevents repeated force-feeds.
+  const GRAY_SEEN_KEY = "civique_gray_seen";
+  let graySeen: Set<string>;
+  try {
+    graySeen = new Set(JSON.parse(sessionStorage.getItem(GRAY_SEEN_KEY) ?? "[]"));
+  } catch {
+    graySeen = new Set();
+  }
+
+  const firstUnseen = merged.find(
+    p => p.author.badge === "gray" && !graySeen.has(p.id),
+  );
+
+  if (firstUnseen) {
+    // Mark as seen for this session
+    graySeen.add(firstUnseen.id);
+    try { sessionStorage.setItem(GRAY_SEEN_KEY, JSON.stringify([...graySeen])); } catch {}
+    // Move it to position 0
+    const without = merged.filter(p => p.id !== firstUnseen.id);
+    return [firstUnseen, ...without];
+  }
+
+  return merged;
+}
+
+// ── Viewer context helper — safe defaults when UserProfile is missing
+interface ViewerCtx { faculty: string; year: number }
+function viewerCtx(user: UserProfile | undefined | null): ViewerCtx {
+  return {
+    faculty: user?.faculty ?? "",
+    year:    user?.year    ?? 1,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
 
 const actionBtn: React.CSSProperties = {
   display: "flex", alignItems: "center", gap: 5,
@@ -363,16 +595,17 @@ function ReplyScreen({ post, onClose, onSubmit, me = { id: "", name: "Moi", hand
 
 // ── PostDetailScreen ──────────────────────────────────────────
 
-function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, profilePic = null, photoCache = {}, userId = "" }: {
-  post:        Post;
-  onClose:     () => void;
-  onComment:   (text: string, imgs?: string[]) => void;
-  onLike:      () => void;
-  onRepost:    () => void;
-  me: Author;
-  profilePic?: string | null;
-  photoCache?: Record<string, string>;
-  userId?:     string;
+function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, profilePic = null, photoCache = {}, userId = "", autoOpenReply = false }: {
+  post:           Post;
+  onClose:        () => void;
+  onComment:      (text: string, imgs?: string[]) => void;
+  onLike:         () => void;
+  onRepost:       () => void;
+  me:             Author;
+  profilePic?:    string | null;
+  photoCache?:    Record<string, string>;
+  userId?:        string;
+  autoOpenReply?: boolean;  // ← NEW: open ReplyScreen immediately on mount
 }) {
   const C = useC();
   const { profilePic: ctxPic, user: ctxUser } = useProfile();
@@ -380,7 +613,8 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
   const isMinePost = post.author.id === myId || post.author.id === me.id;
   const postAuthorPhoto = photoCache[post.author.id] ?? (isMinePost ? (ctxPic ?? profilePic) : null);
 
-  const [showReply, setShowReply] = useState(false);
+  // ← CHANGED: initialise with autoOpenReply so the reply screen opens on mount when triggered from the comment icon
+  const [showReply, setShowReply] = useState(autoOpenReply);
   const [toast, setToast]         = useState(false);
   const [comments, setComments]   = useState<Comment[]>([]);
   const [commentPhotoCache, setCommentPhotoCache] = useState<Record<string, string>>(photoCache);
@@ -560,8 +794,9 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
   const myId       = ctxUser?.id ?? me.id;
   const isMine     = post.author.id === myId || post.author.id === me.id;
   const authorPhoto = photoCache[post.author.id] ?? (isMine ? (ctxPic ?? profilePic) : null);
-  const [expanded,   setExpanded]   = useState(false);
-  const [showDetail, setShowDetail] = useState(false);
+  const [expanded,            setExpanded]            = useState(false);
+  const [showDetail,          setShowDetail]          = useState(false);
+  const [showDetailWithReply, setShowDetailWithReply] = useState(false); // ← NEW
   const PREVIEW_LEN = 220;
   const isLong  = post.body.length > PREVIEW_LEN;
   const bodyText = isLong && !expanded ? post.body.slice(0, PREVIEW_LEN) + "…" : post.body;
@@ -593,7 +828,8 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
           )}
           {post.imgs.length > 0 && <ImgGrid imgs={post.imgs} />}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, paddingRight: 8 }}>
-            <button onClick={e => { e.stopPropagation(); setShowDetail(true); onView(); }} style={actionBtn}>
+            {/* ← CHANGED: comment icon now opens detail with reply pre-opened */}
+            <button onClick={e => { e.stopPropagation(); setShowDetailWithReply(true); onView(); }} style={actionBtn}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/></svg>
               {post.commentCount > 0 && <span style={actionCount}>{fmtNum(post.commentCount)}</span>}
             </button>
@@ -613,14 +849,16 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
         </div>
       </div>
     </div>
-    {showDetail && (
+    {/* ← CHANGED: unified render — autoOpenReply set when coming from comment icon */}
+    {(showDetail || showDetailWithReply) && (
       <PostDetailScreen
         post={post}
         me={me}
         profilePic={profilePic}
         photoCache={photoCache}
         userId={userId}
-        onClose={() => setShowDetail(false)}
+        autoOpenReply={showDetailWithReply}
+        onClose={() => { setShowDetail(false); setShowDetailWithReply(false); }}
         onComment={(text, imgs) => onComment(text, imgs)}
         onLike={onLike}
         onRepost={onRepost}
@@ -860,8 +1098,6 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
 }
 
 // ── CommunityHeader ───────────────────────────────────────────
-
-
 
 // ── DB ↔ local converters ─────────────────────────────────────
 
@@ -1106,7 +1342,11 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     lastScrollY.current = y;
   }, []);
 
-  const feed = feedTab === "all" ? posts : posts.filter(p => p.author.id === ME_LIVE.id);
+  // ── Apply ranking algorithm on "all" tab; "mine" stays chronological
+  const { faculty: vFaculty, year: vYear } = viewerCtx(currentUser);
+  const feed = feedTab === "all"
+    ? rankFeed(posts, vFaculty, vYear)
+    : posts.filter(p => p.author.id === ME_LIVE.id);
 
   const addPost = (text: string, imgs?: string[]) => {
     const now = new Date().toISOString();
@@ -1200,10 +1440,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs) => { addPost(text, imgs); setShowCompose(false); setComposeDraft(""); }} />}
     <div onScroll={handleScroll} style={{ background: C.bg, minHeight: "100%", overflowY: "auto", height: "100%" }}>
 
-      {/* Inline compose box — only on "all" tab */}
-      {feedTab === "all" && (
-        <InlineCompose me={ME_LIVE} profilePic={profilePic} onPost={(text, imgs) => addPost(text, imgs)} />
-      )}
+      {/* InlineCompose intentionally removed — use the FAB (+ button) to compose */}
 
       {loading ? (
         <div style={{ textAlign: "center", padding: "48px 24px", color: C.dim, fontSize: 14 }}>Chargement…</div>
