@@ -1,4 +1,3 @@
-
 /**
  * Treemap.tsx
  * ─────────────────────────────────────────────────────────────
@@ -641,10 +640,13 @@ export function PDFViewer({ thesis, onClose }: { thesis: Thesis; onClose: () => 
   // Desktop: native iframe too
   const isAbsoluteUrl = thesis.pdf.startsWith("http");
 const pdfSrc = isAbsoluteUrl ? thesis.pdf : origin + thesis.pdf;
-const androidUrl = `${origin}/pdf-viewer.html?file=${encodeURIComponent(pdfSrc)}&zoom=${zoom}`;
+const initialUrl = `${origin}/pdf-viewer.html?file=${encodeURIComponent(pdfSrc)}&zoom=${zoom}`;
 
   const handleZoomIn  = () => setZoom(z => Math.min(MAX, z + STEP));
   const handleZoomOut = () => setZoom(z => Math.max(MIN, z - STEP));
+useEffect(() => {
+  iframeRef.current?.contentWindow?.postMessage({ type: "setZoom", zoom }, "*");
+}, [zoom]);
 
   return (
     <div style={{
@@ -687,12 +689,11 @@ const androidUrl = `${origin}/pdf-viewer.html?file=${encodeURIComponent(pdfSrc)}
       {/* ── PDF content — pdf.js on all platforms for consistent sharp rendering ── */}
       <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
         <iframe
-          ref={iframeRef}
-          key={androidUrl}
-          src={androidUrl}
-          style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-          title={thesis.title}
-        />
+  ref={iframeRef}
+  src={initialUrl}         // no key — never remounts
+  style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+  title={thesis.title}
+/>
       </div>
 
       {/* ── Bottom zoom bar ── */}
@@ -869,19 +870,8 @@ export interface Thesis {
   favorite: boolean;
   cover:    string;
   pdf:      string; // path in /public folder
+  faculty?: string; // e.g. "FDSE", "FLA", "FDS", etc.
 }
-
-const SAMPLE_THESES: Thesis[] = [
-  { id: 1, pdf: "/these_economie_informelle.pdf",  title: "Économie informelle et croissance en Haïti",        author: "Jean-Baptiste Moreau",    date: "Mar 2024", favorite: true,  cover: "#4A6FA5" },
-  { id: 2, pdf: "/these_dollarisation.pdf",        title: "Dollarisation et politique monétaire haïtienne",    author: "Claudette Saint-Fleur",  date: "Jan 2024", favorite: false, cover: "#8B5E3C" },
-  { id: 3, pdf: "/these_transferts_diaspora.pdf",  title: "Impact des transferts diaspora sur le PIB",         author: "Pierre-Louis Augustin",  date: "Nov 2023", favorite: true,  cover: "#5A8A6F" },
-  { id: 4, pdf: "/these_microcredit.pdf",          title: "Microcrédit et réduction de la pauvreté rurale",    author: "Marie-Ange Désir",       date: "Sep 2023", favorite: false, cover: "#7B4F8E" },
-  { id: 5, pdf: "/these_chocs_petroliers.pdf",     title: "Chocs pétroliers et inflation en zone caribéenne",  author: "Robenson Étienne",       date: "Jul 2023", favorite: false, cover: "#C4603A" },
-  { id: 6, pdf: "/these_foncier.pdf",              title: "Foncier et blocage du développement agricole",      author: "Nadège Compas",          date: "May 2023", favorite: true,  cover: "#4E7A8A" },
-  { id: 7, pdf: "/these_gouvernance.pdf",          title: "Gouvernance budgétaire et dette publique",          author: "Frantz Lerebours",       date: "Mar 2023", favorite: false, cover: "#6B6B3A" },
-  { id: 8, pdf: "/these_education.pdf",            title: "Éducation et capital humain : rendements privés",   author: "Sophia Blanc-Dominique", date: "Jan 2023", favorite: false, cover: "#8A4A6B" },
-];
-
 
 // ─── THESES HEADER (rendered outside overflow in page.tsx) ───
 export function ThesesHeader({ user }: { user?: import("./AuthFlow").UserProfile | null } = {}) {
@@ -1109,34 +1099,49 @@ function HighlightText({
 function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"vote"|"community") => void; onOpenThesis: (thesis: Thesis) => void }) {
   const C = useC();
   const { t } = useLang();
-  const [query, setQuery]           = useState("");
-  const [theses, setTheses] = useState<Thesis[]>(SAMPLE_THESES);
+  const [query, setQuery]                 = useState("");
+  const [theses, setTheses]               = useState<Thesis[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [activeFaculty, setActiveFaculty] = useState<string | null>(null);
+  const [focused, setFocused]             = useState(false);
 
-useEffect(() => {
-  supabase?.from("civique_books")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .then(({ data }) => {
-      if (!data?.length) return; // keep sample data if table empty
-      setTheses(data.map(b => ({
-        id:       b.id,
-        title:    b.title,
-        author:   b.author,
-        date:     b.date    ?? "",
-        pdf: b.pdf_url,
-        cover: b.cover_url ? `url("${b.cover_url}")` : (b.cover_color ?? "#4A6FA5"),
-        favorite: false,
-      })));
-    });
-}, []);
-  const [focused, setFocused]       = useState(false);
+  useEffect(() => {
+    if (!supabase) { setLoading(false); return; }
+    supabase
+      .from("civique_books")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        setTheses(
+          (data ?? []).map((b: any) => ({
+            id:       b.id,
+            title:    b.title,
+            author:   b.author,
+            date:     b.date     ?? "",
+            pdf:      b.pdf_url,
+            cover:    b.cover_url ? `url("${b.cover_url}")` : (b.cover_color ?? "#4A6FA5"),
+            favorite: false,
+            faculty:  (b.faculty ?? "").trim() || undefined,
+          }))
+        );
+        setLoading(false);
+      });
+  }, []);
 
-  // ── Ranked search ──────────────────────────────────────────
-  // Empty query → show all theses (favorites first), no highlights.
+  // Distinct faculties from DB data only — computed once data arrives
+  const faculties = React.useMemo(
+    () => Array.from(new Set(theses.map(th => th.faculty).filter(Boolean) as string[])).sort(),
+    [theses]
+  );
+
+  // ── Ranked search + faculty filter ─────────────────────────
   const results: SearchResult[] = React.useMemo(() => {
-    const q = query.trim();
+    const q    = query.trim();
+    const pool = activeFaculty
+      ? theses.filter(th => th.faculty === activeFaculty)
+      : theses;
     if (!q) {
-      return theses
+      return pool
         .slice()
         .sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0))
         .map(th => ({
@@ -1146,20 +1151,22 @@ useEffect(() => {
           authorSegs: [{ text: th.author, hit: false }],
         }));
     }
-    return theses
+    return pool
       .map(th => scoreThesis(th, q))
       .filter(r => r.score > 0)
       .sort((a, b) => b.score - a.score);
-  }, [query, theses]);
+  }, [query, theses, activeFaculty]);
 
   const toggleFav = (id: number) =>
     setTheses(prev => prev.map(th => th.id === id ? { ...th, favorite: !th.favorite } : th));
 
   return (
-    <div style={{ background: C.bg, minHeight: "100%" }}>
+    // Full-height flex column: header sticky, list scrolls
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: C.bg }}>
 
-      {/* ── Search bar (header rendered outside in page.tsx) ── */}
+      {/* ── Sticky search + filter header ── */}
       <div style={{
+        flexShrink: 0,
         background: C.surface,
         borderBottom: `1px solid ${C.border}`,
         padding: "10px 16px 12px",
@@ -1183,7 +1190,7 @@ useEffect(() => {
             onChange={e => setQuery(e.target.value)}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            placeholder="Titre, auteur…"
+            placeholder="Titre, auteur\u2026"
             style={{
               flex: 1, border: "none", background: "transparent",
               fontSize: 14, color: C.text, outline: "none",
@@ -1194,19 +1201,96 @@ useEffect(() => {
             <button onClick={() => setQuery("")} style={{
               background: "none", border: "none", cursor: "pointer",
               color: C.dim, fontSize: 16, lineHeight: 1, padding: 0,
-            }}>✕</button>
+            }}>\u2715</button>
           )}
+        </div>
+
+        {/* Faculty filter chips — always rendered, faculty chips appear as data loads */}
+        <div style={{
+          display: "flex", gap: 8, marginTop: 10,
+          overflowX: "auto", paddingBottom: 4,
+          WebkitOverflowScrolling: "touch",
+          // hide scrollbar cross-browser
+          scrollbarWidth: "none",
+          msOverflowStyle: "none",
+        } as React.CSSProperties}>
+          <style>{`
+            .civique-chips::-webkit-scrollbar { display: none; }
+          `}</style>
+
+          {/* "Toutes" chip — always visible */}
+          <button
+            onClick={() => setActiveFaculty(null)}
+            style={{
+              flexShrink: 0, padding: "6px 14px", borderRadius: 99,
+              border: `1.5px solid ${activeFaculty === null ? C.gold : C.border2}`,
+              background: activeFaculty === null ? C.goldBg : "transparent",
+              color: activeFaculty === null ? C.gold : C.sub,
+              fontSize: 12, fontWeight: 600, fontFamily: "var(--f-sans)",
+              cursor: "pointer", transition: "border-color .15s, background .15s, color .15s",
+              WebkitTapHighlightColor: "transparent",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Toutes
+          </button>
+
+          {/* Per-faculty chips — appear once DB rows with faculty arrive */}
+          {faculties.map(fac => {
+            const active = activeFaculty === fac;
+            return (
+              <button
+                key={fac}
+                onClick={() => setActiveFaculty(active ? null : fac)}
+                style={{
+                  flexShrink: 0, padding: "6px 14px", borderRadius: 99,
+                  border: `1.5px solid ${active ? C.gold : C.border2}`,
+                  background: active ? C.goldBg : "transparent",
+                  color: active ? C.gold : C.sub,
+                  fontSize: 12, fontWeight: 600, fontFamily: "var(--f-sans)",
+                  cursor: "pointer", transition: "border-color .15s, background .15s, color .15s",
+                  WebkitTapHighlightColor: "transparent",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {fac}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* ── List ── */}
-      <div style={{ padding: "8px 0" }}>
-        {results.length === 0 && query.trim().length > 0 && (
+      {/* ── Scrollable list ── */}
+      <div style={{ flex: 1, overflowY: "auto" }}>
+
+        {/* Loading skeleton */}
+        {loading && [1,2,3,4,5].map(i => (
+          <div key={i} style={{
+            display: "flex", gap: 14, alignItems: "flex-start",
+            padding: "14px 16px", borderBottom: `1px solid ${C.border}`,
+            background: C.surface, marginBottom: 1,
+          }}>
+            <div style={{ width: 52, height: 68, borderRadius: 6, background: C.border2, flexShrink: 0, opacity: .45 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ height: 13, borderRadius: 6, background: C.border2, marginBottom: 8, width: "72%", opacity: .45 }} />
+              <div style={{ height: 11, borderRadius: 6, background: C.border2, width: "42%", opacity: .35 }} />
+            </div>
+          </div>
+        ))}
+
+        {/* Empty state */}
+        {!loading && results.length === 0 && (
           <div style={{ textAlign: "center", padding: "48px 24px", color: C.dim, fontSize: 14 }}>
-            Aucun résultat pour « {query} »
+            {theses.length === 0
+              ? "Aucune th\u00e8se disponible pour l'instant."
+              : query.trim()
+                ? `Aucun r\u00e9sultat pour \u00ab\u00a0${query}\u00a0\u00bb${activeFaculty ? ` en ${activeFaculty}` : ""}`
+                : `Aucune th\u00e8se pour la facult\u00e9 ${activeFaculty}`}
           </div>
         )}
-        {results.map(({ thesis: th, titleSegs, authorSegs }, i) => (
+
+        {/* Results */}
+        {!loading && results.map(({ thesis: th, titleSegs, authorSegs }, i) => (
           <div key={th.id} onClick={() => onOpenThesis(th)} style={{
             display: "flex", gap: 14, alignItems: "flex-start",
             padding: "14px 16px",
@@ -1217,16 +1301,14 @@ useEffect(() => {
             animation: `fadeup .25s ease ${i * 0.04}s both`,
             WebkitTapHighlightColor: "transparent",
           }}>
-            {/* Cover placeholder */}
+            {/* Cover */}
             <div style={{
-  width: 52, height: 68, borderRadius: 6, flexShrink: 0,
-  background: th.cover,
-  backgroundSize: "cover",
-  backgroundPosition: "center",
-  display: "flex", alignItems: "flex-end", justifyContent: "center",
-  paddingBottom: 6,
-  boxShadow: "2px 2px 8px rgba(0,0,0,.18)",
-}}>
+              width: 52, height: 68, borderRadius: 6, flexShrink: 0,
+              background: th.cover,
+              backgroundSize: "cover", backgroundPosition: "center",
+              display: "flex", alignItems: "flex-end", justifyContent: "center",
+              paddingBottom: 6, boxShadow: "2px 2px 8px rgba(0,0,0,.18)",
+            }}>
               <div style={{ width: 32, height: 2, background: "rgba(255,255,255,.3)", borderRadius: 99 }} />
             </div>
 
@@ -1242,6 +1324,16 @@ useEffect(() => {
                 style={{ fontSize: 12, color: C.sub, display: "block" }}
                 hitStyle={{ color: C.gold, fontWeight: 600 }}
               />
+              {th.faculty && (
+                <span style={{
+                  display: "inline-block", marginTop: 5,
+                  fontSize: 10, fontWeight: 700, letterSpacing: ".5px",
+                  color: C.gold, background: C.goldBg,
+                  padding: "2px 7px", borderRadius: 99,
+                }}>
+                  {th.faculty}
+                </span>
+              )}
             </div>
 
             {/* Right: date + star */}
@@ -1267,7 +1359,7 @@ useEffect(() => {
           </div>
         ))}
 
-        {/* Bottom spacer — clears the fixed navbar */}
+        {/* Bottom spacer */}
         <div style={{ height: NAV_H + 16 }} />
       </div>
     </div>

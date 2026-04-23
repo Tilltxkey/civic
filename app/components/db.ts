@@ -194,6 +194,7 @@ export interface DBPost {
   reposts:    number;
   views:      number;
   comment_count?: number;
+  quoted_post?: string;  // JSON-encoded QuotedPost snapshot for cite-reposts
 }
 
 // ── Realtime subscriptions ────────────────────────────────────
