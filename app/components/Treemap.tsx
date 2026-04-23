@@ -29,6 +29,7 @@ import { useElection, POSTS, isCEPRole, type PostId } from "./ElectionContext";
 import { candidateColor, ConvergingBar } from "./Race";
 import type { UserProfile } from "./AuthFlow";
 import { InscriptionSheet, LaunchElectionSheet, CandidacySheet, RealVoteSheet, ResetElectionSheet } from "./ElectionSheets";
+import { supabase } from "./supabase";
 
 // How long (ms) the "success" sheet stays before auto-dismiss
 const DONE_DELAY = 5000;
@@ -638,7 +639,9 @@ export function PDFViewer({ thesis, onClose }: { thesis: Thesis; onClose: () => 
   // iOS: native PDF in iframe, zoom via CSS scale on a wrapper div
   // Android: pdf.js viewer, zoom baked into URL (triggers re-render)
   // Desktop: native iframe too
-  const androidUrl = `${origin}/pdf-viewer.html?file=${encodeURIComponent(origin + thesis.pdf)}&zoom=${zoom}`;
+  const isAbsoluteUrl = thesis.pdf.startsWith("http");
+const pdfSrc = isAbsoluteUrl ? thesis.pdf : origin + thesis.pdf;
+const androidUrl = `${origin}/pdf-viewer.html?file=${encodeURIComponent(pdfSrc)}&zoom=${zoom}`;
 
   const handleZoomIn  = () => setZoom(z => Math.min(MAX, z + STEP));
   const handleZoomOut = () => setZoom(z => Math.max(MIN, z - STEP));
@@ -1107,7 +1110,25 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
   const C = useC();
   const { t } = useLang();
   const [query, setQuery]           = useState("");
-  const [theses, setTheses]         = useState(SAMPLE_THESES);
+  const [theses, setTheses] = useState<Thesis[]>(SAMPLE_THESES);
+
+useEffect(() => {
+  supabase?.from("civique_books")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .then(({ data }) => {
+      if (!data?.length) return; // keep sample data if table empty
+      setTheses(data.map(b => ({
+        id:       b.id,
+        title:    b.title,
+        author:   b.author,
+        date:     b.date    ?? "",
+        pdf: b.pdf_url,
+        cover: b.cover_url ? `url("${b.cover_url}")` : (b.cover_color ?? "#4A6FA5"),
+        favorite: false,
+      })));
+    });
+}, []);
   const [focused, setFocused]       = useState(false);
 
   // ── Ranked search ──────────────────────────────────────────
@@ -1198,12 +1219,14 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
           }}>
             {/* Cover placeholder */}
             <div style={{
-              width: 52, height: 68, borderRadius: 6, flexShrink: 0,
-              background: th.cover,
-              display: "flex", alignItems: "flex-end", justifyContent: "center",
-              paddingBottom: 6,
-              boxShadow: "2px 2px 8px rgba(0,0,0,.18)",
-            }}>
+  width: 52, height: 68, borderRadius: 6, flexShrink: 0,
+  background: th.cover,
+  backgroundSize: "cover",
+  backgroundPosition: "center",
+  display: "flex", alignItems: "flex-end", justifyContent: "center",
+  paddingBottom: 6,
+  boxShadow: "2px 2px 8px rgba(0,0,0,.18)",
+}}>
               <div style={{ width: 32, height: 2, background: "rgba(255,255,255,.3)", borderRadius: 99 }} />
             </div>
 

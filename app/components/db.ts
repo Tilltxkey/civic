@@ -54,7 +54,7 @@ function fromRow(row: Record<string, unknown>): UserProfile {
     roleDetail:   (row.role_detail as string) ?? "",
     badgePhoto:   (row.badge_photo as string) ?? "",
     profilePhoto: (row.profile_photo as string) ?? "",
-    status:       (row.status as "pending" | "verified") ?? "verified",
+    status:       (row.status as "pending" | "verified" | "rejected" | "banned") ?? "verified",
     avatarColor:  (row.avatar_color as string) ?? "#C47F00",
     badge:        (row.badge as "gold" | "blue" | "gray" | null) ?? null,
     createdAt:    (row.created_at_iso as string) ?? new Date().toISOString(),
@@ -133,6 +133,47 @@ export async function getUserById(
 
   if (error || !data) return { user: null };
   return { user: fromRow(data) };
+}
+
+// ── Poll user status (used by ProcessingScreen after registration) ──
+// Fetches just the status + badge + role fields every `intervalMs` ms.
+// Calls onResult when status is no longer "pending".
+// Returns a cleanup function to stop polling.
+export function pollUserStatus(
+  userId: string,
+  intervalMs: number,
+  onResult: (status: "verified" | "rejected" | "banned", user: UserProfile) => void
+): () => void {
+  if (!DB_READY || !supabase) return () => {};
+
+  let stopped = false;
+
+  const check = async () => {
+    if (stopped) return;
+    const { data, error } = await supabase!
+      .from("civique_users")
+      .select("*")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (stopped) return;
+    if (error || !data) return; // silently retry
+
+    const status = data.status as string;
+    if (status === "verified" || status === "rejected" || status === "banned") {
+      stopped = true;
+      onResult(status as "verified" | "rejected" | "banned", fromRow(data));
+    }
+  };
+
+  // Check once immediately, then on interval
+  check();
+  const timer = setInterval(check, intervalMs);
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 // ── Posts ─────────────────────────────────────────────────────
@@ -219,29 +260,24 @@ export async function deletePost(id: string): Promise<void> {
 
 export async function updatePostStats(id: string, likes: number, reposts: number, views: number): Promise<void> {
   if (!DB_READY || !supabase) return;
-  await supabase
-    .from("civique_posts")
-    .update({ likes, reposts, views })
-    .eq("id", id);
+  await supabase.from("civique_posts").update({ likes, reposts, views }).eq("id", id);
 }
 
-// ── Comments ──────────────────────────────────────────────────
-
 export interface DBComment {
-  id:           string;
-  post_id:      string;
-  author_id:    string;
-  author_nom:   string;
-  author_prenom:string;
-  author_tag:   string;
-  author_color: string;
-  author_badge: string | null;
-  body:         string;
-  imgs:         string[];
-  time_label:   string;
-  created_at?:  string;
-  likes?:       number;
-  dislikes?:    number;
+  id:            string;
+  post_id:       string;
+  author_id:     string;
+  author_nom:    string;
+  author_prenom: string;
+  author_tag:    string;
+  author_color:  string;
+  author_badge:  string | null;
+  body:          string;
+  imgs:          string[];
+  time_label:    string;
+  created_at?:   string;
+  likes?:        number;
+  dislikes?:     number;
 }
 
 export async function loadComments(postId: string): Promise<DBComment[]> {
@@ -263,10 +299,7 @@ export async function insertComment(comment: DBComment): Promise<void> {
 
 export async function updateCommentStats(id: string, likes: number, dislikes: number): Promise<void> {
   if (!DB_READY || !supabase) return;
-  await supabase
-    .from("civique_comments")
-    .update({ likes, dislikes })
-    .eq("id", id);
+  await supabase.from("civique_comments").update({ likes, dislikes }).eq("id", id);
 }
 
 export async function updateUserPhoto(userId: string, photoUrl: string): Promise<void> {
@@ -308,7 +341,6 @@ export async function deltaCommentLikes(commentId: string, delta: 1 | -1): Promi
 
 export async function incrementCommentCount(postId: string): Promise<void> {
   if (!DB_READY || !supabase) return;
-  // Get current count then increment
   const { data } = await supabase
     .from("civique_posts")
     .select("comment_count")
@@ -320,33 +352,8 @@ export async function incrementCommentCount(postId: string): Promise<void> {
     .update({ comment_count: current + 1 })
     .eq("id", postId);
 }
+
 // ── Messages ──────────────────────────────────────────────────
-// SQL to run in Supabase SQL Editor:
-//
-// CREATE TABLE civique_conversations (
-//   id        text PRIMARY KEY,
-//   created_at timestamptz DEFAULT now(),
-//   user_a    text REFERENCES civique_users(id),
-//   user_b    text REFERENCES civique_users(id),
-//   last_msg  text DEFAULT '',
-//   last_at   timestamptz DEFAULT now(),
-//   unread_a  int DEFAULT 0,
-//   unread_b  int DEFAULT 0
-// );
-// ALTER TABLE civique_conversations ENABLE ROW LEVEL SECURITY;
-// CREATE POLICY "public_all" ON civique_conversations FOR ALL USING (true) WITH CHECK (true);
-//
-// CREATE TABLE civique_messages (
-//   id              text PRIMARY KEY,
-//   created_at      timestamptz DEFAULT now(),
-//   conversation_id text REFERENCES civique_conversations(id) ON DELETE CASCADE,
-//   from_id         text REFERENCES civique_users(id),
-//   body            text NOT NULL DEFAULT ''
-// );
-// ALTER TABLE civique_messages ENABLE ROW LEVEL SECURITY;
-// CREATE POLICY "public_all" ON civique_messages FOR ALL USING (true) WITH CHECK (true);
-// ALTER PUBLICATION supabase_realtime ADD TABLE civique_messages;
-// ALTER PUBLICATION supabase_realtime ADD TABLE civique_conversations;
 
 export interface DBConversation {
   id:       string;
@@ -461,19 +468,14 @@ export function subscribeConversations(userId: string, cb: (e: RealtimeConvoEven
 }
 
 // ── DM eligibility ────────────────────────────────────────────
-// A user can DM another only if:
-//   (a) the target has a public post still live, OR
-//   (b) the target dropped their @handle in a comment on one of the sender's posts
 
 export async function canDM(senderId: string, targetHandle: string, targetId: string): Promise<boolean> {
   if (!DB_READY || !supabase) return true;
-  // (a) target has a live post where they explicitly dropped their own @handle in the body
   const { data: posts } = await supabase
     .from("civique_posts")
     .select("body")
     .eq("author_id", targetId);
   if (posts?.some(p => p.body?.toLowerCase().includes(targetHandle.toLowerCase()))) return true;
-  // (b) target dropped their @handle in a comment on one of the sender's posts
   const { data: comments } = await supabase
     .from("civique_comments")
     .select("body, post_id")
@@ -491,8 +493,6 @@ export async function canDM(senderId: string, targetHandle: string, targetId: st
 }
 
 // ── Notifications ─────────────────────────────────────────────
-// Simple in-app notifications stored per user in localStorage.
-// No extra table needed.
 export function pushLocalNotif(userId: string, notif: { id: string; body: string; from: string; createdAt: string }): void {
   try {
     const key  = `civique_notifs_${userId}`;
@@ -500,6 +500,7 @@ export function pushLocalNotif(userId: string, notif: { id: string; body: string
     localStorage.setItem(key, JSON.stringify([notif, ...prev].slice(0, 50)));
   } catch {}
 }
+
 // ── Update user badge ─────────────────────────────────────────
 export async function updateUserBadge(userId: string, badge: "gold" | "blue" | "gray" | null): Promise<void> {
   if (!DB_READY || !supabase) return;

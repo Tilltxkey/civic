@@ -803,7 +803,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
 
   return (
     <>
-    <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 10px", cursor: "pointer" }} onClick={() => { setShowDetail(true); onView(); }}>
+    <div style={{ background: C.surface, borderBottom: `1.5px solid ${C.border}`, padding: "14px 16px 10px", cursor: "pointer" }} onClick={() => { setShowDetail(true); onView(); }}>
       <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
         <Avatar author={post.author} size={44} photoUrl={authorPhoto} />
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -1206,11 +1206,11 @@ function buildAuthorTag(u: UserProfile): string {
     "CEP — Responsable désigné·e":        "cep.resp.",
     "Rectorat":                           "rect.",
     // Elected post roles written by endElection for confirmed winners
-    "Responsable Affaires Académiques":   "RAA",
+    "Responsable Affaires Académiques":   "raa",
     "Délégué·e":                          "dél.",
     "Trésorier·e":                        "trés.",
     "Secrétaire":                         "sec.",
-    "Président·e du Comité Exécutif":     "prés. CE",
+    "Président·e du Comité Exécutif":     "prés.",
   };
   const code = fmap[u.faculty] ?? "fdse";
   const base = `${code}.${u.year}`;
@@ -1243,7 +1243,7 @@ export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setT
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px 0" }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 20, color: C.text, letterSpacing: "-.3px" }}>Réseau étudiant</div>
+            <div style={{ fontWeight: 700, fontSize: 20, color: C.text, letterSpacing: "-.3px", marginBottom: 4 }}>Réseau étudiant</div>
             <div style={{ fontSize: 11, color: C.sub, marginTop: 1, marginBottom: 8 }}>Trouvez vos partenaires, co-fondateurs, collaborateurs</div>
           </div>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>

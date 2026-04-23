@@ -45,7 +45,7 @@ import React, {
 } from "react";
 import { useC } from "./tokens";
 import { useLang } from "./LangContext";
-import { saveUser, checkDuplicate, signInUser, } from "./db";
+import { saveUser, checkDuplicate, signInUser, pollUserStatus } from "./db";
 
 // ─── CONSTANTS ───────────────────────────────────────────────
 
@@ -1206,40 +1206,144 @@ function Step2Screen({
 // Receives user directly — no ref tricks, no localStorage.
 // Timers are properly cleaned up so Strict Mode double-invoke is safe.
 
+// ─── SCREEN: PROCESSING (polls DB for admin approval) ────────
+// Drop-in replacement for the ProcessingScreen function in AuthFlow.tsx.
+// Also add this import at the top of AuthFlow.tsx alongside the other db imports:
+//   import { saveUser, checkDuplicate, signInUser, pollUserStatus } from "./db";
+
 function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: React.MutableRefObject<(u: UserProfile) => void> }) {
   const C = useC();
-  const [phase, setPhase] = useState(0);
+  // phase 0 → saving, 1 → saved (pulse pending), 2 → approved, 3 → done
+  // phase -1 → rejected
+  const [phase, setPhase]       = useState<number>(0);
+  const [rejected, setRejected] = useState(false);
+  const [elapsed, setElapsed]   = useState(0); // seconds waiting
 
   useEffect(() => {
     let cancelled = false;
-    // Save to DB — await it so we know it succeeded before animating "Accès accordé"
+
+    // ── Step 1: save to DB ───────────────────────────────────
     saveUser(user).then(({ error }) => {
       if (cancelled) return;
-      // 409 duplicate = already registered (Strict Mode double-mount) — still OK to proceed
       if (error && error !== "duplicate") {
         console.error("[Civique] saveUser error:", error);
       }
+      setPhase(1); // show "En attente de confirmation"
     });
-    const t1 = setTimeout(() => !cancelled && setPhase(1), 1200);
-    const t2 = setTimeout(() => !cancelled && setPhase(2), 2400);
-    const t3 = setTimeout(() => !cancelled && setPhase(3), 3600);
-    const t4 = setTimeout(() => { if (!cancelled) onDoneRef.current(user); }, 7800);
+
+    // ── Step 2: poll DB every 4s for status change ───────────
+    let stopPolling: (() => void) | null = null;
+
+    const startPolling = () => {
+      stopPolling = pollUserStatus(user.id, 4000, (status, freshUser) => {
+        if (cancelled) return;
+        if (status === "rejected") {
+          setRejected(true);
+          setPhase(-1);
+          return;
+        }
+        // verified or any other non-pending value → let user in
+        setPhase(2);
+        setTimeout(() => {
+          if (!cancelled) {
+            setPhase(3);
+            setTimeout(() => { if (!cancelled) onDoneRef.current(freshUser); }, 1200);
+          }
+        }, 1600);
+      });
+    };
+
+    // Start polling after we know the save has had time to complete
+    const pollTimer = setTimeout(startPolling, 800);
+
+    // ── Elapsed counter (shows how long they've been waiting) ─
+    const ticker = setInterval(() => {
+      if (cancelled) return;
+      setElapsed(s => s + 1);
+    }, 1000);
+
     return () => {
       cancelled = true;
-      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
+      clearTimeout(pollTimer);
+      clearInterval(ticker);
+      stopPolling?.();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // stable: user and onDone set synchronously before this mounts
+  }, []); // stable
 
-  // Each step is done when phase has passed it
+  const allDone = phase >= 2;
+
+  // ── Step labels ───────────────────────────────────────────
   const steps = [
-    { label: "Enregistrement de vos informations", done: phase >= 1 },
-    { label: "Vérification du compte",             done: phase >= 2 },
-    { label: "Accès accordé",                      done: phase >= 3 },
+    {
+      label: "Enregistrement de vos informations",
+      done:  phase >= 1 || phase === -1,
+      active: phase === 0,
+    },
+    {
+      label: "En attente de confirmation admin",
+      done:  phase >= 2,
+      active: phase === 1,
+      pending: phase === 1,
+    },
+    {
+      label: "Accès accordé",
+      done:  phase >= 3,
+      active: phase === 2,
+    },
   ];
 
-  const allDone = phase >= 3;
+  // ── REJECTED screen ───────────────────────────────────────
+  if (rejected) {
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center",
+        minHeight: "100%", padding: "40px 32px",
+        textAlign: "center",
+      }}>
+        <style>{`
+          @keyframes shakeX {
+            0%,100% { transform: translateX(0); }
+            20%,60% { transform: translateX(-6px); }
+            40%,80% { transform: translateX(6px); }
+          }
+        `}</style>
+        <div style={{
+          width: 80, height: 80, borderRadius: "50%",
+          background: "rgba(232,65,42,0.1)",
+          border: "2px solid rgba(232,65,42,0.4)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          marginBottom: 28,
+          animation: "shakeX .5s ease both",
+        }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+            <line x1="18" y1="6" x2="6" y2="18" stroke="#E8412A" strokeWidth="2.5" strokeLinecap="round"/>
+            <line x1="6" y1="6" x2="18" y2="18" stroke="#E8412A" strokeWidth="2.5" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <div style={{ fontWeight: 700, fontSize: 20, color: C.text, marginBottom: 10, letterSpacing: "-.4px" }}>
+          Demande refusée
+        </div>
+        <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, maxWidth: 280, marginBottom: 32 }}>
+          Votre inscription n'a pas été approuvée par l'administration. Si vous pensez qu'il s'agit d'une erreur, contactez un responsable.
+        </div>
+        <button
+          onClick={() => { window.location.reload(); }}
+          style={{
+            padding: "13px 28px", borderRadius: 12,
+            background: "none", border: `1.5px solid ${C.border2}`,
+            color: C.text, fontSize: 14, fontWeight: 600,
+            cursor: "pointer", fontFamily: "var(--f-sans)",
+          }}
+        >
+          Retour à l'accueil
+        </button>
+      </div>
+    );
+  }
 
+  // ── NORMAL processing / pending / approved screen ─────────
   return (
     <div style={{
       display: "flex", flexDirection: "column",
@@ -1257,20 +1361,41 @@ function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: R
           60%  { transform: scale(1.2); opacity: 1; }
           100% { transform: scale(1); opacity: 1; }
         }
+        @keyframes pendingPulse {
+          0%,100% { opacity: 1; transform: scale(1); }
+          50%     { opacity: .55; transform: scale(.88); }
+        }
+        @keyframes pendingRingPulse {
+          0%,100% { stroke-dasharray: 60 180; opacity: 1; }
+          50%     { stroke-dasharray: 30 210; opacity: .5; }
+        }
       `}</style>
 
-      {/* Spinner — swaps to static gold ring when all done */}
+      {/* ── Animated ring ── */}
       <div style={{ position: "relative", width: 88, height: 88, marginBottom: 36 }}>
         <svg width="88" height="88" viewBox="0 0 88 88"
-          style={{ animation: allDone ? "none" : "spin 1.6s linear infinite" }}>
+          style={{
+            animation: allDone
+              ? "none"
+              : phase === 1
+                ? "none"           // pending: ring pulses via CSS on the arc
+                : "spin 1.6s linear infinite",
+          }}
+        >
           <circle cx="44" cy="44" r="38" fill="none" stroke={C.border} strokeWidth="3"/>
           <circle cx="44" cy="44" r="38" fill="none"
-            stroke={C.gold} strokeWidth="3"
-            strokeDasharray={allDone ? "239 0" : "60 180"}
+            stroke={allDone ? C.gold : phase === 1 ? C.gold : C.gold}
+            strokeWidth="3"
+            strokeDasharray={allDone ? "239 0" : phase === 1 ? "60 180" : "60 180"}
             strokeLinecap="round"
-            style={{ transition: allDone ? "stroke-dasharray 3.5s cubic-bezier(.4,0,.2,1)" : "none" }}
+            style={{
+              transition: allDone ? "stroke-dasharray 1.5s cubic-bezier(.4,0,.2,1)" : "none",
+              animation: phase === 1 ? "pendingRingPulse 2s ease-in-out infinite" : "none",
+            }}
           />
         </svg>
+
+        {/* Icon inside ring */}
         <div style={{
           position: "absolute", inset: 0,
           display: "flex", alignItems: "center", justifyContent: "center",
@@ -1281,49 +1406,64 @@ function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: R
                 <path d="M5 13l4 4L19 7" stroke={C.gold} strokeWidth="2.5"
                   strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
-            : <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                <rect x="4" y="3" width="16" height="18" rx="2.5" fill={C.gold} opacity=".15"/>
-                <rect x="4" y="3" width="16" height="18" rx="2.5" stroke={C.gold} strokeWidth="1.5"/>
-                <path d="M8 8.5h8M8 12h8M8 15.5h5" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
+            : phase === 1
+              /* hourglass / clock pulsing when pending */
+              ? <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+                  style={{ animation: "pendingPulse 2s ease-in-out infinite" }}>
+                  <circle cx="12" cy="12" r="9" stroke={C.gold} strokeWidth="1.6"/>
+                  <path d="M12 7v5l3 3" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              : <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                  <rect x="4" y="3" width="16" height="18" rx="2.5" fill={C.gold} opacity=".15"/>
+                  <rect x="4" y="3" width="16" height="18" rx="2.5" stroke={C.gold} strokeWidth="1.5"/>
+                  <path d="M8 8.5h8M8 12h8M8 15.5h5" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
           }
         </div>
       </div>
 
-      {/* Title */}
+      {/* ── Title ── */}
       <div style={{
         fontWeight: 700, fontSize: 20, color: C.text,
         letterSpacing: "-.4px", marginBottom: 10, lineHeight: 1.3,
-        transition: "opacity .3s",
       }}>
-        {allDone ? "Bienvenue dans Civique !" : "Traitement en cours…"}
+        {allDone
+          ? "Bienvenue dans Civique !"
+          : phase === 1
+            ? "Vérification en cours…"
+            : "Traitement en cours…"
+        }
       </div>
 
-      {/* Subtitle */}
+      {/* ── Subtitle ── */}
       <div style={{
         fontSize: 13, color: C.sub, lineHeight: 1.6,
         maxWidth: 280, marginBottom: 40,
       }}>
         {allDone
           ? "Votre compte est actif. Vous pouvez maintenant participer à la vie de votre faculté."
-          : "Vos informations sont en cours d'enregistrement et de vérification."
+          : phase === 1
+            ? `Votre dossier a été soumis. Un administrateur doit confirmer votre inscription.${elapsed > 10 ? `\n(${elapsed}s d'attente)` : ""}`
+            : "Vos informations sont en cours d'enregistrement."
         }
       </div>
 
-      {/* Step indicators */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", maxWidth: 280 }}>
+      {/* ── Step circles ── */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 300 }}>
         {steps.map((s, i) => (
           <div key={i} style={{
             display: "flex", alignItems: "center", gap: 12,
             animation: `fadeup .3s ease ${i * .1}s both`,
           }}>
-            {/* Circle */}
+            {/* Circle indicator */}
             <div style={{
               width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
-              background: s.done ? C.gold : C.border,
+              background: s.done ? C.gold : s.pending ? "transparent" : C.border,
+              border: s.pending ? `2px solid ${C.gold}` : "none",
               display: "flex", alignItems: "center", justifyContent: "center",
               transition: "background .35s ease",
               boxShadow: s.done ? `0 0 0 4px ${C.goldBg}` : "none",
+              animation: s.pending ? "pendingPulse 2s ease-in-out infinite" : "none",
             }}>
               {s.done
                 ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
@@ -1331,21 +1471,49 @@ function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: R
                     <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2"
                       strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
-                : <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.dim }}/>
+                : s.pending
+                  ? <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.gold, animation: "pendingPulse 2s ease-in-out infinite" }}/>
+                  : <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.dim }}/>
               }
             </div>
+
             {/* Label */}
             <span style={{
               fontSize: 13,
-              fontWeight: s.done ? 600 : 400,
-              color: s.done ? C.text : C.sub,
+              fontWeight: s.done || s.pending ? 600 : 400,
+              color: s.done ? C.text : s.pending ? C.gold : C.sub,
               transition: "color .35s ease",
             }}>
               {s.label}
             </span>
+
+            {/* Pulsing "en attente" badge on the pending step */}
+            {s.pending && (
+              <span style={{
+                marginLeft: "auto", fontSize: 10, fontFamily: "var(--f-mono, monospace)",
+                color: C.gold, background: C.goldBg,
+                border: `1px solid ${C.gold}44`,
+                padding: "2px 7px", borderRadius: 4, letterSpacing: ".5px",
+                flexShrink: 0,
+                animation: "pendingPulse 2s ease-in-out infinite",
+              }}>
+                EN ATTENTE
+              </span>
+            )}
           </div>
         ))}
       </div>
+
+      {/* ── Waiting tip (shows after 15s) ── */}
+      {phase === 1 && elapsed >= 15 && (
+        <div style={{
+          marginTop: 32, fontSize: 11, color: C.dim,
+          maxWidth: 260, lineHeight: 1.6,
+          animation: "fadeup .4s ease both",
+        }}>
+          Vous pouvez fermer cette page. Votre compte sera activé dès qu'un administrateur confirmera votre inscription.
+        </div>
+      )}
     </div>
   );
 }
