@@ -42,8 +42,25 @@ const dmMono = DM_Mono({
 
 // ── Page metadata (shown in browser tab + SEO) ───────────────
 export const metadata: Metadata = {
+  // metadataBase is REQUIRED — without it Next.js leaves og:image as a
+  // relative path ("/og-default.png") which WhatsApp cannot fetch.
+  // With it, all og:image URLs in every page become absolute https:// links.
+  metadataBase: new URL("https://civicfdse.vercel.app"),
   title: "Civique · Élection 2026",
   description: "Résultats en direct — Université · Printemps 2026",
+  openGraph: {
+    title:       "Civique · Élection 2026",
+    description: "Résultats en direct — Université · Printemps 2026",
+    url:         "https://civicfdse.vercel.app",
+    siteName:    "Civic",
+    images: [{
+      url:    "https://civicfdse.vercel.app/og-default.png",
+      width:  1200,
+      height: 630,
+      alt:    "Civic",
+    }],
+    type: "website",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
