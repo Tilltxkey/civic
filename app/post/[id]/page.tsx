@@ -1,13 +1,5 @@
 // app/post/[id]/page.tsx
-// Drop this file at exactly this path in your Next.js project.
-// The folder is literally named [id] with square brackets — Next.js requires this.
-//
-// FOLDER STRUCTURE IN YOUR PROJECT:
-//   your-project/
-//   └── app/
-//       └── post/
-//           └── [id]/          ← folder named with square brackets
-//               └── page.tsx   ← this file
+// Place at: your-project/app/post/[id]/page.tsx
 
 import type { Metadata } from "next";
 import { createClient } from "@supabase/supabase-js";
@@ -18,63 +10,93 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
-// ── Load post from Supabase ───────────────────────────────────
 async function fetchPost(id: string) {
   const { data } = await supabase
     .from("civique_posts")
-    .select("id, author_nom, author_prenom, body, imgs, created_at")
+    .select("id, author_nom, author_prenom, author_tag, body, imgs, created_at")
     .eq("id", id)
     .single();
   return data;
 }
 
-// ── OG metadata — WhatsApp reads this to build the preview card ──
+// ── THIS is what WhatsApp reads to build the preview card ──────────────────
+// Must export from the page file directly — layout.tsx metadata does NOT
+// override page-level generateMetadata, but only if this export is present.
 export async function generateMetadata(
   { params }: { params: { id: string } }
 ): Promise<Metadata> {
   const post = await fetchPost(params.id);
 
+  const BASE_URL = "https://civicfdse.vercel.app";
+
   if (!post) {
     return {
       title: "Civic",
+      description: "Le réseau étudiant",
       openGraph: {
         title:       "Civic",
         description: "Le réseau étudiant",
-        url:         "https://https://civicfdse.vercel.app",
-        images:      [{ url: "https://https://civicfdse.vercel.app/og-default.png", width: 1200, height: 630 }],
+        url:         BASE_URL,
+        siteName:    "Civic",
+        images: [{ url: `${BASE_URL}/og-default.png`, width: 1200, height: 630 }],
+        type: "website",
       },
     };
   }
 
-  const name  = `${post.author_nom} ${post.author_prenom}`.trim();
-  const title = `${name} sur Civic`;
-  const desc  = post.body?.length > 200 ? post.body.slice(0, 200) + "…" : post.body;
-  const image = Array.isArray(post.imgs) && post.imgs[0]?.startsWith("https://")
+  // ── Build the card content ─────────────────────────────────────────────
+  // og:title  → shown as the bold header  e.g. "nueve n (@nueve) sur Civic"
+  // og:description → the post body snippet
+  // og:image  → author avatar if stored as https://, else app banner
+  // These three map directly to what WhatsApp renders inside the dark card.
+
+  const authorName = `${post.author_nom} ${post.author_prenom}`.trim();
+
+  // Build @handle from author_tag (e.g. "eco.3 · del." → strip, use nom)
+  const handle = `@${post.author_nom.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "")}`;
+
+  const ogTitle = `${authorName} (${handle}) sur Civic`;
+  const ogDesc  = post.body?.length > 200
+    ? post.body.slice(0, 200) + "…"
+    : (post.body ?? "");
+
+  // Use post image if it's a real hosted URL, else fall back to app banner
+  const ogImage = Array.isArray(post.imgs) && typeof post.imgs[0] === "string" && post.imgs[0].startsWith("https://")
     ? post.imgs[0]
-    : "https://https://civicfdse.vercel.app/og-default.png";
-  const url   = `https://https://civicfdse.vercel.app/post/${post.id}`;
+    : `${BASE_URL}/og-default.png`;
+
+  const postUrl = `${BASE_URL}/post/${post.id}`;
 
   return {
-    title,
-    description: desc,
+    // page <title> — also shown in some share contexts
+    title:       ogTitle,
+    description: ogDesc,
+    // Prevent layout.tsx from merging its own og tags on top of ours
     openGraph: {
-      title,
-      description: desc,
-      url,
-      siteName: "Civic",
-      type:     "article",
-      images:   [{ url: image, width: 1200, height: 630, alt: title }],
+      title:       ogTitle,
+      description: ogDesc,
+      url:         postUrl,
+      siteName:    "Civic",
+      type:        "article",
+      images: [{
+        url:    ogImage,
+        width:  1200,
+        height: 630,
+        alt:    ogTitle,
+      }],
     },
     twitter: {
       card:        "summary_large_image",
-      title,
-      description: desc,
-      images:      [image],
+      title:       ogTitle,
+      description: ogDesc,
+      images:      [ogImage],
     },
   };
 }
 
-// ── Page: redirect users who tap the link back to the app ────
+// ── Page component: redirect users to the app ─────────────────────────────
+// WhatsApp only ever fetches the <head> — real users who tap the link are
+// sent back to the main app with the post ID so it can open that post.
 export default async function PostSharePage({
   params,
 }: {

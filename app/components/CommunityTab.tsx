@@ -1018,16 +1018,16 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
     // Line 2: blank
     // Line 3: post body (truncated)
     // Line 4: blank
-    // Line 5: "🔗 https://civicfdse.vercel.app"  ← link triggers WhatsApp URL preview card
+    // Line 5: "🔗 civic.app"  ← link triggers WhatsApp URL preview card
     const handle = post.author.handle
       || "@" + post.author.name.toLowerCase().replace(/\s+/g, "");
     const snippet = post.body.length > 280 ? post.body.slice(0, 280) + "\u2026" : post.body;
-    // The URL must be a real https:// link — WhatsApp only generates a rich preview
-    // card (with title, image, description) when the message contains an actual URL
-    // it can fetch OG tags from. Plain "https://civicfdse.vercel.app" text is not enough.
-    const postUrl = `https://https://civicfdse.vercel.app/post/${post.id}`;
-    const shareText = `${post.author.name} (${handle}) sur Civic\n\n${snippet}\n\n${postUrl}`;
-    const url = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+    // Send ONLY the URL — no surrounding text.
+    // WhatsApp generates the full rich card (avatar, name, body, link) entirely
+    // from the OG tags on the page. Any extra text appears as ugly flat text
+    // OUTSIDE the card, exactly like image 1. URL-only = clean card like image 2.
+    const postUrl = `https://civicfdse.vercel.app/post/${post.id}`;
+    const url = `https://wa.me/?text=${encodeURIComponent(postUrl)}`;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
