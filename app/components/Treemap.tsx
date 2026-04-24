@@ -1190,7 +1190,7 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
             onChange={e => setQuery(e.target.value)}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            placeholder="Titre, auteur\u2026"
+            placeholder="Titre, auteur"
             style={{
               flex: 1, border: "none", background: "transparent",
               fontSize: 14, color: C.text, outline: "none",

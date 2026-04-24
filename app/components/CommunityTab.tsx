@@ -440,17 +440,20 @@ function StickerPicker({ onPick, onClose }: { onPick: (s: string) => void; onClo
 
 // ── QuoteEmbed — compact inline preview of the quoted post ──────
 
-function QuoteEmbed({ q }: { q: QuotedPost }) {
+function QuoteEmbed({ q, onTap }: { q: QuotedPost; onTap?: () => void }) {
   const C = useC();
   return (
-    <div style={{
-      border: `1.5px solid ${C.border}`,
-      borderRadius: 12,
-      padding: "10px 12px",
-      marginTop: 8,
-      background: C.card,
-      cursor: "default",
-    }}>
+    <div
+      onClick={onTap ? (e) => { e.stopPropagation(); onTap(); } : undefined}
+      style={{
+        border: `1.5px solid ${C.border}`,
+        borderRadius: 12,
+        padding: "10px 12px",
+        marginTop: 8,
+        background: C.card,
+        cursor: onTap ? "pointer" : "default",
+        transition: onTap ? "background .12s" : undefined,
+      }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
         <div style={{
           width: 18, height: 18, borderRadius: "50%",
@@ -971,12 +974,13 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
 
 // ── PostCard ──────────────────────────────────────────────────
 
-function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, profilePic = null, photoCache = {}, userId = "" }: {
+function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView, me, profilePic = null, photoCache = {}, userId = "" }: {
   post:        Post;
   onLike:      () => void;
   onRepost:    (kind?: "simple" | "quote", quoteText?: string, quoteImgs?: string[]) => void;
   onComment:   (text: string, imgs?: string[]) => void;
   onDelete:    () => void;
+  onHide:      () => void;
   onView:      () => void;
   me:          Author;
   profilePic?: string | null;
@@ -992,27 +996,56 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
   const [showDetail,          setShowDetail]          = useState(false);
   const [showDetailWithReply, setShowDetailWithReply] = useState(false);
   const [showRepostSheet,     setShowRepostSheet]     = useState(false);
-  // likeAnim: incremented every tap so React re-mounts the span and restarts the CSS animation cleanly
+  const [showMenu,            setShowMenu]            = useState(false);
+  const [showQuotedDetail,    setShowQuotedDetail]    = useState(false);
   const [likeAnimKey,         setLikeAnimKey]         = useState(0);
   const [likeAnimActive,      setLikeAnimActive]      = useState(false);
 
   const handleLike = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    // Bump key → forces span remount → animation always restarts from 0%
     setLikeAnimKey(k => k + 1);
     setLikeAnimActive(true);
     setTimeout(() => setLikeAnimActive(false), 420);
     onLike();
   };
 
+  const handleShare = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowMenu(false);
+    // X (Twitter)-style WhatsApp share card:
+    // Line 1: "Name (@handle) sur Civic"  ← bold header
+    // Line 2: blank
+    // Line 3: post body (truncated)
+    // Line 4: blank
+    // Line 5: "🔗 https://civicfdse.vercel.app"  ← link triggers WhatsApp URL preview card
+    const handle = post.author.handle
+      || "@" + post.author.name.toLowerCase().replace(/\s+/g, "");
+    const snippet = post.body.length > 280 ? post.body.slice(0, 280) + "\u2026" : post.body;
+    // The URL must be a real https:// link — WhatsApp only generates a rich preview
+    // card (with title, image, description) when the message contains an actual URL
+    // it can fetch OG tags from. Plain "https://civicfdse.vercel.app" text is not enough.
+    const postUrl = `https://https://civicfdse.vercel.app/post/${post.id}`;
+    const shareText = `${post.author.name} (${handle}) sur Civic\n\n${snippet}\n\n${postUrl}`;
+    const url = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
   const PREVIEW_LEN = 220;
   const isLong  = post.body.length > PREVIEW_LEN;
   const bodyText = isLong && !expanded ? post.body.slice(0, PREVIEW_LEN) + "…" : post.body;
 
+  const quotedAsPost: Post | null = post.quotedPost ? {
+    id: post.quotedPost.id, author: post.quotedPost.author,
+    body: post.quotedPost.body, imgs: post.quotedPost.imgs,
+    createdAt: new Date(0).toISOString(),
+    likes: 0, liked: false, reposts: 0, reposted: false,
+    views: 0, commentCount: 0, comments: [], showComments: false,
+  } : null;
+
   return (
     <>
-    {/* Keyframes for isolated like-button pop */}
+    {/* Keyframes for isolated like-button pop — scoped to this card */}
     <style>{`
       @keyframes likeHeartPop {
         0%   { transform: scale(1); }
@@ -1020,6 +1053,10 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
         55%  { transform: scale(0.88); }
         80%  { transform: scale(1.1); }
         100% { transform: scale(1); }
+      }
+      @keyframes menuFadeIn {
+        from { opacity: 0; transform: scale(0.92) translateY(-4px); }
+        to   { opacity: 1; transform: scale(1) translateY(0); }
       }
     `}</style>
     <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 10px", cursor: "pointer" }} onClick={() => { setShowDetail(true); onView(); }}>
@@ -1035,9 +1072,37 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
               </div>
               <div style={{ fontSize: 11, color: C.sub, marginTop: 1 }}>{post.author.tag}</div>
             </div>
-            {isMine && (
-              <button onClick={e => { e.stopPropagation(); onDelete(); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, padding: "0 2px", fontSize: 18, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>···</button>
-            )}
+            {/* ··· menu — always visible, owner: delete | non-owner: hide */}
+            <div style={{ position: "relative", flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+              <button onClick={e => { e.stopPropagation(); setShowMenu(v => !v); }}
+                style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, padding: "0 4px 0 8px", fontSize: 18, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>···</button>
+              {showMenu && (
+                <>
+                  <div onClick={() => setShowMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 300 }} />
+                  <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, zIndex: 301, minWidth: 190, boxShadow: "0 8px 32px rgba(0,0,0,.18)", overflow: "hidden", animation: "menuFadeIn .15s ease both" }}>
+                    {/* Share to WhatsApp */}
+                    <button onClick={handleShare} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--f-sans)", fontSize: 15, color: C.text, WebkitTapHighlightColor: "transparent", borderBottom: `1px solid ${C.border}` }}>
+                      <svg width="19" height="19" viewBox="0 0 32 32" fill="none">
+                        <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.613 1.832 6.511L4 29l7.697-1.813A11.94 11.94 0 0 0 16 28c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="#25D366"/>
+                        <path d="M21.5 18.5c-.3-.15-1.77-.87-2.04-.97-.28-.1-.48-.15-.68.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.27-.47-2.41-1.49-.89-.79-1.49-1.77-1.67-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.68-1.64-.93-2.24-.24-.59-.49-.51-.68-.52-.17-.01-.37-.01-.57-.01-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49s1.07 2.89 1.22 3.09c.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.71.23 1.36.2 1.87.12.57-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.19-.57-.34z" fill="#fff"/>
+                      </svg>
+                      Partager sur WhatsApp
+                    </button>
+                    {isMine ? (
+                      <button onClick={e => { e.stopPropagation(); setShowMenu(false); onDelete(); }} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--f-sans)", fontSize: 15, color: "#E8412A", WebkitTapHighlightColor: "transparent" }}>
+                        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M9 6V4h6v2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        Supprimer
+                      </button>
+                    ) : (
+                      <button onClick={e => { e.stopPropagation(); setShowMenu(false); onHide(); }} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--f-sans)", fontSize: 15, color: C.text, WebkitTapHighlightColor: "transparent" }}>
+                        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                        Ne plus voir ce post
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
           <div style={{ fontSize: 15, color: C.text, lineHeight: 1.55, marginTop: 8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{bodyText}</div>
           {isLong && (
@@ -1047,7 +1112,9 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
           )}
           {post.imgs.length > 0 && <ImgGrid imgs={post.imgs} />}
           {/* Quote embed — shown when this post is a quote-repost */}
-          {post.quotedPost && <QuoteEmbed q={post.quotedPost} />}
+          {post.quotedPost && (
+            <QuoteEmbed q={post.quotedPost} onTap={() => setShowQuotedDetail(true)} />
+          )}
           <div onClick={e => e.stopPropagation()} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, paddingRight: 8 }}>
             {/* Comment button */}
             <button onClick={e => { e.stopPropagation(); setShowDetailWithReply(true); onView(); }} style={actionBtn}>
@@ -1066,16 +1133,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
             </button>
             {/* Like button — isolated pop animation, never touches the card */}
             <button onClick={handleLike} style={{ ...actionBtn, color: post.liked ? "#E8412A" : "currentColor" }}>
-              <span
-                key={likeAnimKey}
-                style={{
-                  display: "inline-flex",
-                  willChange: "transform",
-                  animation: likeAnimActive ? "likeHeartPop .42s cubic-bezier(.2,.8,.3,1) both" : "none",
-                  transformOrigin: "center",
-                  pointerEvents: "none",
-                }}
-              >
+              <span key={likeAnimKey} style={{ display: "inline-flex", willChange: "transform", animation: likeAnimActive ? "likeHeartPop .42s cubic-bezier(.2,.8,.3,1) both" : "none", transformOrigin: "center", pointerEvents: "none" }}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill={post.liked ? "#E8412A" : "none"}>
                   <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" stroke={post.liked ? "#E8412A" : "currentColor"} strokeWidth="1.6"/>
                 </svg>
@@ -1104,6 +1162,15 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onView, me, pro
         onComment={(text, imgs) => onComment(text, imgs)}
         onLike={onLike}
         onRepost={onRepost}
+      />
+    )}
+    {/* PostDetailScreen for quoted original (tap QuoteEmbed) */}
+    {showQuotedDetail && quotedAsPost && (
+      <PostDetailScreen
+        post={quotedAsPost} me={me} profilePic={profilePic}
+        photoCache={photoCache} userId={userId} autoOpenReply={false}
+        onClose={() => setShowQuotedDetail(false)}
+        onComment={() => {}} onLike={() => {}} onRepost={() => {}}
       />
     )}
     {/* RepostSheet — X-style Reposter / Citer sheet */}
@@ -1379,7 +1446,7 @@ function dbToAuthor(row: DBPost | DBComment): Author {
 }
 
 function postToDb(p: Post): DBPost {
-  const row: DBPost = {
+  const row: DBPost & { quoted_post?: string } = {
     id: p.id,
     ...authorToDb(p.author),
     body:          p.body,
@@ -1394,7 +1461,7 @@ function postToDb(p: Post): DBPost {
   if (p.quotedPost) {
     row.quoted_post = JSON.stringify(p.quotedPost);
   }
-  return row;
+  return row as DBPost;
 }
 
 function dbToPost(row: DBPost & { quoted_post?: string }, likedSet?: Set<string>, repostedSet?: Set<string>): Post {
@@ -1550,6 +1617,23 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
   const [photoCache, setPhotoCache]   = useState<Record<string, string>>({});
   const [showCompose, setShowCompose] = useState(autoOpenCompose);
   const [composeDraft, setComposeDraft] = useState(composePrefill);
+
+  // ── Hidden posts — declared BEFORE `feed` so it can filter them ──
+  const HIDDEN_KEY = `civique_hidden_${uid}`;
+  const [hiddenPostIds, setHiddenPostIds] = useState<Set<string>>(() => {
+    try { return new Set<string>(JSON.parse(localStorage.getItem(`civique_hidden_${currentUser?.id ?? ""}`) ?? "[]")); }
+    catch { return new Set<string>(); }
+  });
+
+  const hidePost = useCallback((id: string) => {
+    setHiddenPostIds(prev => {
+      const next = new Set(prev);
+      next.add(id);
+      try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }, [HIDDEN_KEY]);
+
   // Per-session view guard: a post counts as viewed only once per session
   const viewedPosts = useRef<Set<string>>(new Set());
 
@@ -1655,19 +1739,18 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
   // ── Apply ranking algorithm on "all" tab; "mine" stays chronological
   const { faculty: vFaculty, year: vYear } = viewerCtx(currentUser);
   const feed = (() => {
-    if (feedTab !== "all") return posts.filter(p => p.author.id === ME_LIVE.id);
+    const visible = posts.filter(p => !hiddenPostIds.has(p.id));
+    if (feedTab !== "all") return visible.filter(p => p.author.id === ME_LIVE.id);
+    const posts_for_rank = visible;
 
     const isFrozen = Date.now() < scoreFreezeUntil.current;
 
     if (isFrozen && frozenOrder.current.size > 0) {
-      // FREEZE ACTIVE: sort the LIVE post objects by their frozen rank index.
-      // This means counter/data updates show instantly but positions stay locked.
       const knownRank = (id: string) => frozenOrder.current.get(id) ?? Infinity;
-      return [...posts].sort((a, b) => knownRank(a.id) - knownRank(b.id));
+      return [...posts_for_rank].sort((a, b) => knownRank(a.id) - knownRank(b.id));
     }
 
-    // FREEZE INACTIVE: compute fresh ranking
-    const ranked = rankFeed(posts, vFaculty, vYear, seenGrayIds.current);
+    const ranked = rankFeed(posts_for_rank, vFaculty, vYear, seenGrayIds.current);
 
     // Capture this order into frozenOrder so stampFreeze can use it
     frozenOrder.current = new Map(ranked.map((p, i) => [p.id, i]));
@@ -1829,6 +1912,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
           onRepost={(kind, text, imgs) => toggleRepost(post.id, kind, text, imgs)}
           onComment={(text, imgs) => addComment(post.id, text, imgs)}
           onDelete={() => deletePost(post.id)}
+          onHide={() => hidePost(post.id)}
           onView={() => incrementPostViews(post.id)}
           photoCache={photoCache}
           userId={uid}
