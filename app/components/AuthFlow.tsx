@@ -63,7 +63,7 @@ export interface UserProfile {
   roleDetail:   string;
   badgePhoto:   string;
   profilePhoto?: string;   // user-set avatar photo (separate from ID badge)
-  status:       "pending" | "verified";
+  status:       "pending" | "verified" | "rejected" | "banned";
   avatarColor:  string;
   badge:        "gold" | "blue" | "gray" | null;
   createdAt:    string;
