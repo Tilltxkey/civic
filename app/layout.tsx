@@ -24,7 +24,6 @@ import { LangProvider } from "./components/LangContext";
 import { ThemeProvider } from "./components/ThemeContext";
 import { ProfileProvider } from "./components/ProfileContext";
 
-// ── Load DM Sans — used for all body text ────────────────────
 const sans = DM_Sans({
   subsets: ["latin"],
   weight: ["300", "400", "500", "600", "700"],
@@ -32,7 +31,6 @@ const sans = DM_Sans({
   display: "swap",
 });
 
-// ── Load DM Mono — used for vote counts + percentages ────────
 const dmMono = DM_Mono({
   subsets: ["latin"],
   weight: ["300", "400", "500"],
@@ -40,34 +38,50 @@ const dmMono = DM_Mono({
   display: "swap",
 });
 
-// ── Page metadata (shown in browser tab + SEO) ───────────────
+// ── Metadata Configuration ────────────────────────────────────
 export const metadata: Metadata = {
-  // metadataBase is REQUIRED — without it Next.js leaves og:image as a
-  // relative path ("/og-default.png") which WhatsApp cannot fetch.
-  // With it, all og:image URLs in every page become absolute https:// links.
+  // REQUIRED: This turns "/og-default.png" into "https://civicfdse.vercel.app/og-default.png"
   metadataBase: new URL("https://civicfdse.vercel.app"),
-  title: "Civique · Élection 2026",
-  description: "Résultats en direct — Université · Printemps 2026",
+  title: "Civic",
+  description: "nah",
+  
   openGraph: {
-    title:       "Civique · Élection 2026",
-    description: "Résultats en direct — Université · Printemps 2026",
-    url:         "https://civicfdse.vercel.app",
-    siteName:    "Civic",
-    images: [{
-      url:    "https://civicfdse.vercel.app/og-default.png",
-      width:  1200,
-      height: 630,
-      alt:    "Civic",
-    }],
+    title: "Civic",
+    description: "fellow",
+    url: "https://civicfdse.vercel.app",
+    siteName: "Civic",
+    images: [
+      {
+        url: "/og-default.png", // Located in your /public folder
+        width: 1200,
+        height: 630,
+        alt: "Civique Logo",
+      },
+    ],
+    locale: "fr_FR",
     type: "website",
+  },
+  
+  twitter: {
+    card: "summary_large_image",
+    title: "Civics",
+    description: "twiitwer",
+    images: ["/og-default.png"],
   },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    // Font CSS variables are added to <html> so they're available everywhere
     <html lang="fr" className={`${sans.variable} ${dmMono.variable}`}>
-      <body><ThemeProvider><ProfileProvider><LangProvider>{children}</LangProvider></ProfileProvider></ThemeProvider></body>
+      <body>
+        <ThemeProvider>
+          <ProfileProvider>
+            <LangProvider>
+              {children}
+            </LangProvider>
+          </ProfileProvider>
+        </ThemeProvider>
+      </body>
     </html>
   );
 }
