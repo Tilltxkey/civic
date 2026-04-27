@@ -45,7 +45,7 @@ import React, {
 } from "react";
 import { useC } from "./tokens";
 import { useLang } from "./LangContext";
-import { saveUser, checkDuplicate, signInUser, pollUserStatus } from "./db";
+import { saveUser, checkDuplicate, signInUser, pollUserStatus, getUserById } from "./db";
 
 // ─── CONSTANTS ───────────────────────────────────────────────
 
@@ -119,12 +119,13 @@ const VACATIONS = ["Jour", "Soir"] as const;
 
 const ROLES = [
   "Étudiant·e",
-  "Délégué·e de classe",
-  "Président·e d'association",
-  "Membre CEP",
-  "CEP — Responsable désigné·e",
+  "Décanat",
   "Rectorat",
+  "N/A",
 ] as const;
+
+// Roles that don't need academic fields (year, vacation, faculty, field, matricule)
+const NON_STUDENT_ROLES: string[] = ["Décanat", "Rectorat", "N/A"];
 
 const AVATAR_COLORS = [
   "#4A6FA5","#5A8A6F","#8B5E3C","#7B4F8E",
@@ -627,6 +628,117 @@ function LandingScreen({
 
 // ─── SCREEN: SIGN IN ─────────────────────────────────────────
 
+// ─── FINGERPRINT ICON ────────────────────────────────────────
+function FingerprintIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 56 56" fill="none">
+      <path d="M28 6C17.5 6 9 14.5 9 25c0 9.8 5.2 18.3 12.9 23" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
+      <path d="M28 6c10.5 0 19 8.5 19 19 0 9.8-5.2 18.3-12.9 23" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
+      <path d="M28 14c-6.1 0-11 4.9-11 11 0 7.2 2.3 13.9 6.2 19.3" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
+      <path d="M28 14c6.1 0 11 4.9 11 11 0 7.2-2.3 13.9-6.2 19.3" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
+      <path d="M28 22c-1.7 0-3 1.3-3 3 0 5.2 1.4 10.1 3.8 14.4" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
+      <path d="M28 22c1.7 0 3 1.3 3 3 0 5.2-1.4 10.1-3.8 14.4" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
+      <path d="M19 10.5C14.2 13.5 11 18.9 11 25" stroke={color} strokeWidth="2.4" strokeLinecap="round" opacity=".55"/>
+      <path d="M37 10.5C41.8 13.5 45 18.9 45 25" stroke={color} strokeWidth="2.4" strokeLinecap="round" opacity=".55"/>
+      <circle cx="28" cy="25" r="2" fill={color}/>
+    </svg>
+  );
+}
+
+// ─── BIOMETRIC HELPERS ───────────────────────────────────────
+// We store { userId, credentialId } in localStorage after a successful
+// manual login + WebAuthn registration. On subsequent visits, we use
+// navigator.credentials.get() to verify presence/liveness, then fetch
+// the user from DB by stored userId — no password transmitted.
+
+const BIO_KEY = "civique_bio_v1";
+
+function base64url(buf: ArrayBuffer): string {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+async function isBiometricAvailable(): Promise<boolean> {
+  try {
+    if (typeof window === "undefined") return false;
+    if (!window.PublicKeyCredential) return false;
+    return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch { return false; }
+}
+
+async function registerBiometric(userId: string, userName: string): Promise<boolean> {
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const hostname = window.location.hostname;
+    // On localhost/IP, omit rpId so the browser uses its default
+    const rpId = (hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname))
+      ? undefined
+      : hostname;
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: "Civique", ...(rpId ? { id: rpId } : {}) },
+        user: {
+          id: new TextEncoder().encode(userId),
+          name: userName,
+          displayName: userName,
+        },
+        pubKeyCredParams: [
+          { type: "public-key", alg: -7 },
+          { type: "public-key", alg: -257 },
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: "platform",
+          userVerification: "preferred", // "preferred" is more compatible than "required"
+          residentKey: "preferred",
+        },
+        timeout: 60000,
+      },
+    }) as PublicKeyCredential | null;
+    if (!cred) return false;
+    localStorage.setItem(BIO_KEY, JSON.stringify({
+      userId,
+      credentialId: base64url(cred.rawId),
+      rpId: rpId ?? window.location.hostname,
+    }));
+    return true;
+  } catch (e) {
+    console.warn("[Civique] registerBiometric failed:", e);
+    return false;
+  }
+}
+
+async function authenticateWithBiometric(): Promise<string | null> {
+  try {
+    const raw = localStorage.getItem(BIO_KEY);
+    if (!raw) return null;
+    const { userId, credentialId, rpId } = JSON.parse(raw) as { userId: string; credentialId: string; rpId?: string };
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const credIdBytes = Uint8Array.from(
+      atob(credentialId.replace(/-/g, "+").replace(/_/g, "/")),
+      c => c.charCodeAt(0)
+    );
+    const hostname = window.location.hostname;
+    const useRpId = (hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname))
+      ? undefined
+      : (rpId ?? hostname);
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        ...(useRpId ? { rpId: useRpId } : {}),
+        allowCredentials: [{ type: "public-key", id: credIdBytes }],
+        userVerification: "preferred",
+        timeout: 60000,
+      },
+    });
+    if (!assertion) return null;
+    return userId;
+  } catch (e) {
+    console.warn("[Civique] authenticateWithBiometric failed:", e);
+    return null;
+  }
+}
+
 function SignInScreen({
   onBack, onSuccess,
 }: {
@@ -634,10 +746,19 @@ function SignInScreen({
   onSuccess: (user: UserProfile) => void;
 }) {
   const C = useC();
-  const [matricule, setMatricule] = useState("");
-  const [nom, setNom]             = useState("");
-  const [err, setErr]             = useState("");
-  const [loading, setLoading]     = useState(false);
+  const [matricule, setMatricule]   = useState("");
+  const [nom, setNom]               = useState("");
+  const [err, setErr]               = useState("");
+  const [loading, setLoading]       = useState(false);
+  const [bioAvail, setBioAvail]     = useState(false);
+  const [bioSaved, setBioSaved]     = useState(false);
+  const [bioLoading, setBioLoading] = useState(false);
+  const [bioState, setBioState]     = useState<"idle"|"scanning"|"success"|"fail">("idle");
+
+  useEffect(() => {
+    isBiometricAvailable().then(ok => setBioAvail(ok));
+    setBioSaved(!!localStorage.getItem(BIO_KEY));
+  }, []);
 
   const handleSubmit = () => {
     if (!matricule.trim() || !nom.trim()) {
@@ -646,11 +767,18 @@ function SignInScreen({
     }
     setErr("");
     setLoading(true);
-    signInUser(matricule, nom).then(({ user, error }) => {
+    signInUser(matricule, nom).then(async ({ user, error }) => {
       setLoading(false);
-      if (user) { onSuccess(user); return; }
+      if (user) {
+        // If biometric is available and not yet registered, offer to save
+        if (!localStorage.getItem(BIO_KEY)) {
+          await registerBiometric(user.id, `${user.prenom} ${user.nom}`).catch(() => {});
+          setBioSaved(!!localStorage.getItem(BIO_KEY));
+        }
+        onSuccess(user);
+        return;
+      }
       if (error === "no_db") {
-        // Debug: log what's actually set
         console.warn("[Civique] DB not ready.", {
           url:  !!process.env.NEXT_PUBLIC_SUPABASE_URL,
           key:  !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
@@ -665,6 +793,169 @@ function SignInScreen({
       }
     });
   };
+
+  const handleBiometric = async () => {
+    setBioState("scanning");
+    setBioLoading(true);
+    setErr("");
+    const userId = await authenticateWithBiometric();
+    if (!userId) {
+      setBioState("fail");
+      setBioLoading(false);
+      setTimeout(() => setBioState("idle"), 2000);
+      setErr("Authentification biométrique échouée. Connectez-vous manuellement.");
+      return;
+    }
+    const { user } = await getUserById(userId);
+    setBioLoading(false);
+    if (!user) {
+      setBioState("fail");
+      setTimeout(() => setBioState("idle"), 2000);
+      setErr("Compte introuvable. Reconnectez-vous manuellement.");
+      localStorage.removeItem(BIO_KEY);
+      setBioSaved(false);
+      return;
+    }
+    setBioState("success");
+    setTimeout(() => onSuccess(user), 600);
+  };
+
+  // ── Enrolled: show fingerprint as the main UI ────────────
+  if (bioSaved) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", minHeight: "100%", padding: "0 0 40px" }}>
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "14px 16px 0", flexShrink: 0,
+        }}>
+          <button onClick={onBack} style={{
+            background: "none", border: "none", cursor: "pointer",
+            fontSize: 22, color: C.gold, padding: "0 4px",
+            WebkitTapHighlightColor: "transparent",
+          }}>‹</button>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 18, color: C.text }}>Bon retour</div>
+            <div style={{ fontSize: 12, color: C.sub }}>Connexion biométrique</div>
+          </div>
+        </div>
+
+        <div style={{
+          flex: 1, display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center",
+          padding: "0 32px 40px", gap: 0,
+        }}>
+          {/* Fingerprint hero button */}
+          <button
+            onClick={handleBiometric}
+            disabled={bioLoading}
+            style={{
+              background: "none", border: "none", cursor: bioLoading ? "default" : "pointer",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 0,
+              padding: 0, WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            {/* Animated glow ring */}
+            <div style={{
+              position: "relative",
+              width: 140, height: 140,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              marginBottom: 28,
+            }}>
+              {/* Outer glow rings */}
+              {bioState === "scanning" && <>
+                <div style={{
+                  position: "absolute", inset: -14, borderRadius: "50%",
+                  border: `2px solid ${C.gold}`,
+                  opacity: 0.25,
+                  animation: "pendingPulse 1s ease-in-out infinite",
+                }}/>
+                <div style={{
+                  position: "absolute", inset: -26, borderRadius: "50%",
+                  border: `1.5px solid ${C.gold}`,
+                  opacity: 0.12,
+                  animation: "pendingPulse 1s ease-in-out .25s infinite",
+                }}/>
+              </>}
+              {/* Circle bg */}
+              <div style={{
+                width: 140, height: 140, borderRadius: "50%",
+                background: bioState === "success"
+                  ? "rgba(34,197,94,.1)"
+                  : bioState === "fail"
+                  ? "rgba(232,65,42,.08)"
+                  : C.goldBg,
+                border: `2px solid ${
+                  bioState === "success" ? "rgba(34,197,94,.4)"
+                  : bioState === "fail" ? "rgba(232,65,42,.3)"
+                  : C.gold + "33"
+                }`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "background .3s, border-color .3s",
+                boxShadow: bioState === "idle" || bioState === "scanning"
+                  ? `0 0 0 16px ${C.goldBg}55, 0 0 0 32px ${C.goldBg}22`
+                  : "none",
+              }}>
+                {bioState === "success"
+                  ? <svg width="52" height="52" viewBox="0 0 24 24" fill="none" style={{ animation: "checkPop .4s cubic-bezier(.2,.8,.3,1) both" }}>
+                      <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  : bioState === "fail"
+                  ? <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+                      <path d="M18 6L6 18M6 6l12 12" stroke="#E8412A" strokeWidth="2.2" strokeLinecap="round"/>
+                    </svg>
+                  : <FingerprintIcon size={72} color={C.gold} />
+                }
+              </div>
+            </div>
+
+            {/* Label */}
+            <div style={{
+              fontWeight: 700, fontSize: 20, letterSpacing: "-.3px",
+              color: bioState === "success" ? "#22C55E"
+                : bioState === "fail" ? "#E8412A"
+                : C.text,
+              marginBottom: 8, transition: "color .25s",
+            }}>
+              {bioState === "scanning" ? "Scan en cours…"
+                : bioState === "success" ? "Bienvenue !"
+                : bioState === "fail"    ? "Non reconnu"
+                : "Poser le doigt"}
+            </div>
+            <div style={{ fontSize: 13, color: C.dim, lineHeight: 1.5, textAlign: "center", maxWidth: 240 }}>
+              {bioState === "scanning" ? "Posez votre doigt ou regardez l'écran"
+                : bioState === "success" ? "Connexion en cours…"
+                : bioState === "fail"    ? "Essayez de nouveau ou connectez-vous manuellement"
+                : "Touch ID · Face ID · Empreinte"}
+            </div>
+          </button>
+
+          {err && (
+            <div style={{
+              fontSize: 13, color: "#E8412A",
+              background: "#FDF1EF", borderRadius: 10,
+              padding: "10px 14px", marginTop: 28, width: "100%",
+            }}>
+              {err}
+            </div>
+          )}
+
+          {/* Manual login fallback link */}
+          <button
+            onClick={() => setBioSaved(false)}
+            style={{
+              marginTop: 36, background: "none", border: "none",
+              fontSize: 13, color: C.sub, cursor: "pointer",
+              fontFamily: "var(--f-sans)",
+              textDecoration: "underline", textDecorationColor: C.border2,
+            }}
+          >
+            Se connecter manuellement
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100%", padding: "0 0 40px" }}>
@@ -715,6 +1006,105 @@ function SignInScreen({
             padding: "10px 14px", marginBottom: 20,
           }}>
             {err}
+          </div>
+        )}
+
+        {/* ── Biometric button ── */}
+        {(
+          <div style={{ marginTop: 8, marginBottom: 4 }}>
+            {/* Divider */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: 12,
+              marginBottom: 20,
+            }}>
+              <div style={{ flex: 1, height: 1, background: C.border }}/>
+              <span style={{ fontSize: 11, color: C.dim, letterSpacing: ".5px", textTransform: "uppercase" }}>
+                ou
+              </span>
+              <div style={{ flex: 1, height: 1, background: C.border }}/>
+            </div>
+
+            <button
+              onClick={handleBiometric}
+              disabled={bioLoading}
+              style={{
+                width: "100%",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
+                padding: "15px",
+                borderRadius: 14,
+                border: `1.5px solid ${
+                  bioState === "success" ? "#22C55E"
+                  : bioState === "fail"  ? "#E8412A"
+                  : C.border2
+                }`,
+                background: bioState === "success"
+                  ? "rgba(34,197,94,.08)"
+                  : bioState === "fail"
+                  ? "rgba(232,65,42,.06)"
+                  : C.card,
+                cursor: bioLoading ? "not-allowed" : "pointer",
+                transition: "border-color .2s, background .2s",
+                WebkitTapHighlightColor: "transparent",
+                fontFamily: "var(--f-sans)",
+              }}
+            >
+              {/* Icon */}
+              <div style={{
+                width: 36, height: 36,
+                borderRadius: 10,
+                background: bioState === "success"
+                  ? "rgba(34,197,94,.14)"
+                  : bioState === "fail"
+                  ? "rgba(232,65,42,.1)"
+                  : C.goldBg,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                flexShrink: 0,
+                transition: "background .2s",
+              }}>
+                {bioState === "scanning" ? (
+                  /* Pulse ring while scanning */
+                  <div style={{
+                    width: 20, height: 20, borderRadius: "50%",
+                    border: `2.5px solid ${C.gold}`,
+                    animation: "pendingPulse 1s ease-in-out infinite",
+                  }}/>
+                ) : bioState === "success" ? (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                ) : bioState === "fail" ? (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M18 6L6 18M6 6l12 12" stroke="#E8412A" strokeWidth="2.2" strokeLinecap="round"/>
+                  </svg>
+                ) : (
+                  <FingerprintIcon size={22} color={C.gold} />
+                )}
+              </div>
+
+              {/* Label */}
+              <div style={{ textAlign: "left" }}>
+                <div style={{
+                  fontSize: 14, fontWeight: 700,
+                  color: bioState === "success" ? "#22C55E"
+                    : bioState === "fail" ? "#E8412A"
+                    : C.text,
+                  transition: "color .2s",
+                }}>
+                  {bioState === "scanning" ? "Scan en cours…"
+                    : bioState === "success" ? "Identité confirmée"
+                    : bioState === "fail"    ? "Échec de reconnaissance"
+                    : bioSaved              ? "Connexion biométrique"
+                    : "Activer la biométrie"}
+                </div>
+                <div style={{ fontSize: 12, color: C.dim, marginTop: 1 }}>
+                  {bioState === "scanning" ? "Posez votre doigt ou regardez l'écran"
+                    : bioState === "success" ? "Connexion en cours…"
+                    : bioState === "fail"    ? "Réessayez ou utilisez le formulaire"
+                    : bioSaved              ? "Empreinte · Face ID · PIN"
+                    : "Se connectera sans matricule à l'avenir"}
+                </div>
+              </div>
+            </button>
           </div>
         )}
       </div>
@@ -778,15 +1168,19 @@ function Step1Screen({
 
   const validate = (): boolean => {
     const e: Partial<Record<keyof Step1Data, boolean>> = {};
-    if (!d.matricule.trim() && d.role !== "Rectorat") e.matricule = true;
+    const isNonStudent = NON_STUDENT_ROLES.includes(d.role);
+    if (!d.matricule.trim() && !isNonStudent) e.matricule = true;
     if (!d.nom.trim())       e.nom       = true;
     if (!d.prenom.trim())    e.prenom    = true;
-    if (!d.faculty)          e.faculty   = true;
-    if (!d.field)            e.field     = true;
-    if (!d.year || +d.year < 1 || +d.year > 7) e.year = true;
-    if (!d.vacation)         e.vacation  = true;
+    if (!isNonStudent) {
+      if (!d.faculty)        e.faculty   = true;
+      if (!d.field)          e.field     = true;
+      if (!d.year || +d.year < 1 || +d.year > 7) e.year = true;
+      if (!d.vacation)       e.vacation  = true;
+    }
     if (!d.role)             e.role      = true;
     if (d.role === "Rectorat" && !d.roleDetail.trim()) e.roleDetail = true;
+    if (d.role === "Décanat" && !d.roleDetail.trim())  e.roleDetail = true;
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -847,65 +1241,17 @@ function Step1Screen({
           </div>
         </div>
 
-        {/* Row 2: Sexe (full width, before faculty) */}
+        {/* Row 2: Sexe (full width, before role) */}
         <FieldWrap>
           <Label>Sexe *</Label>
           <StyledSelect value={d.sexe} onChange={v => set("sexe", v)} error={errors.sexe}>
             <option value="M">Masculin</option>
             <option value="F">Féminin</option>
+            <option value="N/A">N/A</option>
           </StyledSelect>
         </FieldWrap>
 
-        {/* Row 3: Faculté + Filière */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
-          <div>
-            <Label>Faculté *</Label>
-            <StyledSelect value={d.faculty} onChange={v => set("faculty", v)} error={errors.faculty}>
-              {FACULTIES.map(f => <option key={f} value={f}>{f}</option>)}
-            </StyledSelect>
-          </div>
-          <div>
-            <Label>Filière *</Label>
-            <StyledSelect value={d.field} onChange={v => set("field", v)} error={errors.field}>
-              <option value="" disabled>
-                {d.faculty ? "Filière…" : "— d'abord la faculté"}
-              </option>
-              {availableFields.map(f => <option key={f} value={f}>{f}</option>)}
-            </StyledSelect>
-          </div>
-        </div>
-
-        {/* ── Academic info ── */}
-        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.5px", color: C.dim, textTransform: "uppercase", marginBottom: 14, marginTop: 6 }}>
-          Parcours académique
-        </div>
-
-        {/* Year + Vacation side by side */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
-          <div>
-            <Label>Année (1–7) *</Label>
-            <StyledInput
-              value={d.year}
-              onChange={e => {
-                const v = e.target.value.replace(/\D/g, "");
-                if (v === "" || (+v >= 1 && +v <= 7)) set("year", v);
-              }}
-              placeholder="ex : 3"
-              inputMode="numeric"
-              maxLength={1}
-              error={errors.year}
-            />
-          </div>
-          <div>
-            <Label>Vacation *</Label>
-            <StyledSelect value={d.vacation} onChange={v => set("vacation", v)} error={errors.vacation}>
-              <option value="" disabled>Choisir…</option>
-              {VACATIONS.map(v => <option key={v} value={v}>{v}</option>)}
-            </StyledSelect>
-          </div>
-        </div>
-
-        {/* ── Role ── */}
+        {/* ── Role (controls which fields appear below) ── */}
         <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.5px", color: C.dim, textTransform: "uppercase", marginBottom: 14, marginTop: 6 }}>
           Rôle dans l'institution
         </div>
@@ -917,21 +1263,21 @@ function Step1Screen({
           </StyledSelect>
         </FieldWrap>
 
-        {/* Rectorat free-text */}
-        {d.role === "Rectorat" && (
+        {/* Rectorat / Décanat free-text */}
+        {(d.role === "Rectorat" || d.role === "Décanat") && (
           <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
             <Label>Précisez votre fonction *</Label>
             <StyledInput
               value={d.roleDetail}
               onChange={e => set("roleDetail", e.target.value)}
-              placeholder="ex : Vice-doyen économique, Resp. communication…"
+              placeholder="ex : Vice-doyen, Resp. communication…"
               error={errors.roleDetail}
             />
           </FieldWrap>
         )}
 
-        {/* Matricule — shown for all non-Rectorat roles */}
-        {d.role !== "Rectorat" && (
+        {/* Matricule — shown only for students */}
+        {!NON_STUDENT_ROLES.includes(d.role) && (
           <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
             <Label>Matricule étudiant *</Label>
             <StyledInput
@@ -942,6 +1288,61 @@ function Step1Screen({
               error={errors.matricule}
             />
           </FieldWrap>
+        )}
+
+        {/* ── Academic fields — hidden for non-student roles ── */}
+        {!NON_STUDENT_ROLES.includes(d.role) && (
+          <>
+            {/* Faculté + Filière */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+              <div>
+                <Label>Faculté *</Label>
+                <StyledSelect value={d.faculty} onChange={v => set("faculty", v)} error={errors.faculty}>
+                  {FACULTIES.map(f => <option key={f} value={f}>{f}</option>)}
+                </StyledSelect>
+              </div>
+              <div>
+                <Label>Filière *</Label>
+                <StyledSelect value={d.field} onChange={v => set("field", v)} error={errors.field}>
+                  <option value="" disabled>
+                    {d.faculty ? "Filière…" : "— d'abord la faculté"}
+                  </option>
+                  {availableFields.map(f => <option key={f} value={f}>{f}</option>)}
+                </StyledSelect>
+              </div>
+            </div>
+
+            {/* ── Academic info ── */}
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.5px", color: C.dim, textTransform: "uppercase", marginBottom: 14, marginTop: 6 }}>
+              Parcours académique
+            </div>
+
+            {/* Year + Vacation side by side */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+              <div>
+                <Label>Année (1–7) *</Label>
+                <StyledInput
+                  value={d.year}
+                  onChange={e => {
+                    const v = e.target.value.replace(/\D/g, "");
+                    if (v === "" || (+v >= 1 && +v <= 7)) set("year", v);
+                  }}
+                  placeholder="ex : 3"
+                  inputMode="numeric"
+                  maxLength={1}
+                  error={errors.year}
+                />
+              </div>
+              <div>
+                <Label>Vacation *</Label>
+                <StyledSelect value={d.vacation} onChange={v => set("vacation", v)} error={errors.vacation}>
+                  <option value="" disabled>Choisir…</option>
+                  {VACATIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                  <option value="N/A">N/A</option>
+                </StyledSelect>
+              </div>
+            </div>
+          </>
         )}
 
         {/* Any field error reminder */}
@@ -971,7 +1372,7 @@ function Step1Screen({
         <PrimaryBtn onClick={async () => {
           setDupError("");
           if (!validate()) return;
-          if (d.role !== "Rectorat" && d.matricule.trim()) {
+          if (!NON_STUDENT_ROLES.includes(d.role) && d.matricule.trim()) {
             setDupChecking(true);
             const isDup = await checkDuplicate(d.matricule);
             setDupChecking(false);
@@ -1001,6 +1402,7 @@ function Step2Screen({
   const C = useC();
   const [photo, setPhoto]     = useState<string | null>(null);
   const [cropSrc, setCropSrc] = useState<string | null>(null);
+  const [sheet, setSheet]     = useState<"why" | "tips" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1047,63 +1449,205 @@ function Step2Screen({
 
       <div style={{ flex: 1, overflowY: "auto", padding: "4px 24px 24px" }}>
 
-        {/* Explanation card */}
-        <div style={{
-          background: C.goldBg,
-          border: `1px solid ${C.gold}33`,
-          borderRadius: 14,
-          padding: "16px 16px",
-          marginBottom: 24,
-        }}>
-          <div style={{ fontWeight: 700, fontSize: 14, color: C.gold, marginBottom: 8 }}>
-            📋  Pourquoi cette étape ?
-          </div>
-          <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
-            Votre compte est vérifié par l'administration avant activation.
-            Cette pièce confirme que vous êtes bien membre de l'institution.
-          </div>
-        </div>
-
-        {/* Document types accepted */}
+        {/* ── Documents acceptés (always visible) ── */}
         <div style={{ marginBottom: 20 }}>
-          <Label>Documents acceptés</Label>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "1.2px", color: C.dim, textTransform: "uppercase", marginBottom: 10 }}>
+            Documents acceptés
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {[
-              ["🪪", "Badge étudiant officiel"],
-              ["📄", "Fiche d'immatriculation"],
-              ["🎓", "Carte universitaire"],
-              ["📑", "Tout document officiel FDSE"],
-            ].map(([icon, label]) => (
+            {([
+              [<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="12" height="16" rx="1.5" stroke={C.gold} strokeWidth="1.6"/><path d="M7 8h4M7 11h4M7 14h2" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/><rect x="13" y="9" width="8" height="5" rx="1" fill={C.gold} opacity=".18" stroke={C.gold} strokeWidth="1.4"/><path d="M15 11.5h4" stroke={C.gold} strokeWidth="1.3" strokeLinecap="round"/></svg>, "Badge étudiant officiel"],
+              [<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke={C.gold} strokeWidth="1.6"/><path d="M14 2v6h6" stroke={C.gold} strokeWidth="1.6"/><path d="M8 13h8M8 17h5" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/></svg>, "Fiche d'immatriculation"],
+              [<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2" stroke={C.gold} strokeWidth="1.6"/><path d="M7 9h10M7 13h6" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/><circle cx="18" cy="13" r="2" stroke={C.gold} strokeWidth="1.4"/></svg>, "Carte universitaire"],
+              [<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M9 12h6M9 16h4" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/><path d="M5 3h11l3 3v15a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" stroke={C.gold} strokeWidth="1.6"/><path d="M16 3v4h4" stroke={C.gold} strokeWidth="1.4"/></svg>, "Tout document officiel FDSE"],
+            ] as [React.ReactNode, string][]).map(([icon, label]) => (
               <div key={label} style={{
                 display: "flex", alignItems: "center", gap: 10,
                 fontSize: 13, color: C.text,
               }}>
-                <span style={{ fontSize: 18 }}>{icon}</span>
+                <span style={{ display:"flex", alignItems:"center" }}>{icon}</span>
                 {label}
               </div>
             ))}
           </div>
         </div>
 
-        {/* Tips */}
-        <div style={{
-          background: C.card, border: `1px solid ${C.border}`,
-          borderRadius: 12, padding: "14px 14px", marginBottom: 24,
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.sub, marginBottom: 10, letterSpacing: ".5px" }}>
-            CONSEILS POUR UNE BONNE PHOTO
-          </div>
-          {[
-            "📸  Bonne luminosité — évitez les reflets",
-            "🔍  Document entier visible dans le cadre",
-            "✋  Tenez le document bien à plat",
-            "🚫  Pas de texte ou d'infos masqués",
-          ].map(tip => (
-            <div key={tip} style={{ fontSize: 13, color: C.sub, marginBottom: 6, lineHeight: 1.45 }}>
-              {tip}
-            </div>
-          ))}
+        {/* ── Info icon buttons ── */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
+          <button
+            onClick={() => setSheet("why")}
+            style={{
+              flex: 1, display: "flex", alignItems: "center", gap: 8,
+              padding: "11px 14px", borderRadius: 12,
+              border: `1.5px solid ${C.border2}`,
+              background: C.card, cursor: "pointer",
+              fontFamily: "var(--f-sans)",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke={C.gold} strokeWidth="1.6"/>
+              <path d="M12 11v5" stroke={C.gold} strokeWidth="1.8" strokeLinecap="round"/>
+              <circle cx="12" cy="7.5" r="1" fill={C.gold}/>
+            </svg>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+              Pourquoi cette étape ?
+            </span>
+          </button>
+
+          <button
+            onClick={() => setSheet("tips")}
+            style={{
+              flex: 1, display: "flex", alignItems: "center", gap: 8,
+              padding: "11px 14px", borderRadius: 12,
+              border: `1.5px solid ${C.border2}`,
+              background: C.card, cursor: "pointer",
+              fontFamily: "var(--f-sans)",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" stroke={C.gold} strokeWidth="1.6"/>
+              <circle cx="12" cy="13" r="4" stroke={C.gold} strokeWidth="1.6"/>
+            </svg>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+              Conseils photo
+            </span>
+          </button>
         </div>
+
+        {/* ── Bottom sheet modal ── */}
+        {sheet && (
+          <>
+            {/* Backdrop */}
+            <div
+              onClick={() => setSheet(null)}
+              style={{
+                position: "fixed", inset: 0, zIndex: 400,
+                background: "rgba(0,0,0,.45)",
+                animation: "fadeup .15s ease both",
+              }}
+            />
+            {/* Sheet — outer container: no scroll, fixed height */}
+            <div style={{
+              position: "fixed", bottom: 0, left: 0, right: 0,
+              zIndex: 401,
+              background: C.surface,
+              borderRadius: "20px 20px 0 0",
+              boxShadow: "0 -4px 32px rgba(0,0,0,.18)",
+              animation: "sheetUp .28s cubic-bezier(.2,.8,.3,1) both",
+              maxHeight: "80vh",
+              display: "flex", flexDirection: "column",
+            }}>
+              {/* ── Sticky header: handle + title + X — never scrolls ── */}
+              <div style={{
+                flexShrink: 0,
+                padding: "0 20px 0",
+                borderBottom: `1px solid ${C.border}`,
+              }}>
+                {/* Drag handle */}
+                <div style={{
+                  width: 36, height: 4, borderRadius: 99,
+                  background: C.border2, margin: "12px auto 0",
+                }}/>
+                {/* Title row */}
+                <div style={{
+                  display: "flex", alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "14px 0 14px",
+                }}>
+                  <div style={{ fontWeight: 700, fontSize: 17, color: C.text }}>
+                    {sheet === "why" ? "Pourquoi cette étape ?" : "Conseils pour une bonne photo"}
+                  </div>
+                  <button
+                    onClick={() => setSheet(null)}
+                    style={{
+                      width: 30, height: 30, borderRadius: "50%",
+                      border: "none", background: C.card,
+                      color: C.sub, fontSize: 16,
+                      cursor: "pointer", display: "flex",
+                      alignItems: "center", justifyContent: "center",
+                      flexShrink: 0, marginLeft: 12,
+                      WebkitTapHighlightColor: "transparent",
+                      fontFamily: "var(--f-sans)",
+                    }}
+                  >✕</button>
+                </div>
+              </div>
+
+              {/* ── Scrollable body ── */}
+              <div style={{ overflowY: "auto", padding: "20px 20px 32px", flex: 1 }}>
+                {sheet === "why" ? (
+                  <>
+                    <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.65, marginBottom: 22 }}>
+                      Votre compte est vérifié par l'administration avant activation.
+                      Cette pièce confirme que vous êtes bien membre de l'institution.
+                    </div>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "1.2px", color: C.dim, textTransform: "uppercase", marginBottom: 12 }}>
+                      Documents acceptés
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {([
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="12" height="16" rx="1.5" stroke={C.gold} strokeWidth="1.6"/><path d="M7 8h4M7 11h4M7 14h2" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/><rect x="13" y="9" width="8" height="5" rx="1" fill={C.gold} opacity=".18" stroke={C.gold} strokeWidth="1.4"/><path d="M15 11.5h4" stroke={C.gold} strokeWidth="1.3" strokeLinecap="round"/></svg>, "Badge étudiant officiel"],
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke={C.gold} strokeWidth="1.6"/><path d="M14 2v6h6" stroke={C.gold} strokeWidth="1.6"/><path d="M8 13h8M8 17h5" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/></svg>, "Fiche d'immatriculation"],
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2" stroke={C.gold} strokeWidth="1.6"/><path d="M7 9h10M7 13h6" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/><circle cx="18" cy="13" r="2" stroke={C.gold} strokeWidth="1.4"/></svg>, "Carte universitaire"],
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 12h6M9 16h4" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/><path d="M5 3h11l3 3v15a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" stroke={C.gold} strokeWidth="1.6"/><path d="M16 3v4h4" stroke={C.gold} strokeWidth="1.4"/></svg>, "Tout document officiel FDSE"],
+                      ] as [React.ReactNode, string][]).map(([icon, label]) => (
+                        <div key={label} style={{
+                          display: "flex", alignItems: "center", gap: 12,
+                          padding: "13px 14px", borderRadius: 12,
+                          background: C.card, border: `1px solid ${C.border}`,
+                        }}>
+                          <span style={{ display:"flex", alignItems:"center" }}>{icon}</span>
+                          <span style={{ fontSize: 14, color: C.text, fontWeight: 500 }}>{label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.65, marginBottom: 22 }}>
+                      Une photo nette et lisible accélère la vérification de votre compte.
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {([
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3a6 6 0 0 1 6 6c0 2.5-1.5 4.6-3 5.7V17a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-2.3C7.5 13.6 6 11.5 6 9a6 6 0 0 1 6-6z" stroke={C.gold} strokeWidth="1.6"/><path d="M9 21h6" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/></svg>, "Bonne luminosité", "Évitez les reflets et les zones d'ombre"],
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke={C.gold} strokeWidth="1.6"/><path d="M20 20l-3-3" stroke={C.gold} strokeWidth="1.8" strokeLinecap="round"/><path d="M8 11h6M11 8v6" stroke={C.gold} strokeWidth="1.4" strokeLinecap="round"/></svg>, "Document entier visible", "Le cadre doit contenir tout le document"],
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke={C.gold} strokeWidth="1.6"/><path d="M3 9h18M9 3v18" stroke={C.gold} strokeWidth="1.4" strokeLinecap="round"/></svg>, "Tenez le document bien à plat", "Pas de pliures ni d'angle prononcé"],
+                        [<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke={C.gold} strokeWidth="1.6"/><path d="M15 9l-6 6M9 9l6 6" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/></svg>, "Aucun texte masqué", "Toutes les informations doivent être lisibles"],
+                      ] as [React.ReactNode, string, string][]).map(([icon, title, desc]) => (
+                        <div key={title} style={{
+                          display: "flex", alignItems: "flex-start", gap: 14,
+                          padding: "13px 14px", borderRadius: 12,
+                          background: C.card, border: `1px solid ${C.border}`,
+                        }}>
+                          <span style={{ display:"flex", alignItems:"center", flexShrink: 0, marginTop: 1 }}>{icon}</span>
+                          <div>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 2 }}>{title}</div>
+                            <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.5 }}>{desc}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <button
+                  onClick={() => setSheet(null)}
+                  style={{
+                    marginTop: 24, width: "100%",
+                    padding: "14px", borderRadius: 14,
+                    border: "none", background: C.gold,
+                    color: "#fff", fontSize: 15, fontWeight: 700,
+                    fontFamily: "var(--f-sans)", cursor: "pointer",
+                  }}
+                >
+                  Compris
+                </button>
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Photo preview / upload zone */}
         {photo ? (
@@ -1197,6 +1741,18 @@ function Step2Screen({
             Une photo est requise pour continuer
           </div>
         )}
+        {/* Temporary skip — low memory fallback */}
+        <button
+          onClick={() => onSubmit("__skipped__")}
+          style={{
+            display: "block", margin: "14px auto 0",
+            background: "none", border: "none",
+            fontSize: 11, color: C.border2,
+            cursor: "pointer", fontFamily: "var(--f-sans)",
+          }}
+        >
+          passer
+        </button>
       </div>
     </div>
   );
@@ -1211,52 +1767,58 @@ function Step2Screen({
 // Also add this import at the top of AuthFlow.tsx alongside the other db imports:
 //   import { saveUser, checkDuplicate, signInUser, pollUserStatus } from "./db";
 
-function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: React.MutableRefObject<(u: UserProfile) => void> }) {
+const PENDING_KEY = "civique_pending_v1";
+
+function ProcessingScreen({
+  user,
+  onDoneRef,
+  rehydrated = false,
+}: {
+  user:        UserProfile;
+  onDoneRef:   React.MutableRefObject<(u: UserProfile) => void>;
+  rehydrated?: boolean;
+}) {
   const C = useC();
-  // phase 0 → saving, 1 → saved (pulse pending), 2 → approved, 3 → done
-  // phase -1 → rejected
-  const [phase, setPhase]       = useState<number>(0);
-  const [rejected, setRejected] = useState(false);
-  const [elapsed, setElapsed]   = useState(0); // seconds waiting
+  const [phase, setPhase]           = useState<number>(rehydrated ? 1 : 0);
+  const [rejected, setRejected]     = useState(false);
+  const [elapsed, setElapsed]       = useState(0);
+  const approvedUserRef             = useRef<UserProfile | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    // ── Step 1: save to DB ───────────────────────────────────
-    saveUser(user).then(({ error }) => {
-      if (cancelled) return;
-      if (error && error !== "duplicate") {
-        console.error("[Civique] saveUser error:", error);
-      }
-      setPhase(1); // show "En attente de confirmation"
-    });
-
-    // ── Step 2: poll DB every 4s for status change ───────────
-    let stopPolling: (() => void) | null = null;
-
-    const startPolling = () => {
-      stopPolling = pollUserStatus(user.id, 4000, (status, freshUser) => {
+    const beginPolling = () => {
+      const stop = pollUserStatus(user.id, 4000, (status, freshUser) => {
         if (cancelled) return;
         if (status === "rejected") {
+          try { localStorage.removeItem(PENDING_KEY); } catch {}
           setRejected(true);
           setPhase(-1);
           return;
         }
-        // verified or any other non-pending value → let user in
-        setPhase(2);
-        setTimeout(() => {
-          if (!cancelled) {
-            setPhase(3);
-            setTimeout(() => { if (!cancelled) onDoneRef.current(freshUser); }, 1200);
-          }
-        }, 1600);
+        try { localStorage.removeItem(PENDING_KEY); } catch {}
+        approvedUserRef.current = freshUser;
+        setPhase(2); // triggers biometric enrollment sheet before landing
       });
+      return stop;
     };
 
-    // Start polling after we know the save has had time to complete
-    const pollTimer = setTimeout(startPolling, 800);
+    let stopPolling: (() => void) | null = null;
 
-    // ── Elapsed counter (shows how long they've been waiting) ─
+    if (rehydrated) {
+      stopPolling = beginPolling();
+    } else {
+      saveUser(user).then(({ error }) => {
+        if (cancelled) return;
+        if (error && error !== "duplicate") {
+          console.error("[Civique] saveUser error:", error);
+        }
+        try { localStorage.setItem(PENDING_KEY, JSON.stringify({ id: user.id })); } catch {}
+        setPhase(1);
+        stopPolling = beginPolling();
+      });
+    }
+
     const ticker = setInterval(() => {
       if (cancelled) return;
       setElapsed(s => s + 1);
@@ -1264,14 +1826,22 @@ function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: R
 
     return () => {
       cancelled = true;
-      clearTimeout(pollTimer);
       clearInterval(ticker);
       stopPolling?.();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // stable
 
-  const allDone = phase >= 2;
+  // When approved, show bio enrollment sheet (or land directly if bio unavailable)
+  useEffect(() => {
+    if (phase !== 2) return;
+    // Transition to done — root component will intercept and show bio setup if needed
+    setPhase(3);
+    setTimeout(() => onDoneRef.current(approvedUserRef.current!), 600);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  const allDone = phase >= 3;
 
   // ── Step labels ───────────────────────────────────────────
   const steps = [
@@ -1289,7 +1859,7 @@ function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: R
     {
       label: "Accès accordé",
       done:  phase >= 3,
-      active: phase === 2,
+      active: phase === 2 || phase === 3,
     },
   ];
 
@@ -1514,20 +2084,206 @@ function ProcessingScreen({ user, onDoneRef }: { user: UserProfile; onDoneRef: R
           Vous pouvez fermer cette page. Votre compte sera activé dès qu'un administrateur confirmera votre inscription.
         </div>
       )}
+
+
+    </div>
+  );
+}
+
+// ─── BIOMETRIC SETUP SCREEN (standalone, shown after approval) ───
+function BiometricSetupScreen({
+  user,
+  onDone,
+}: {
+  user:   UserProfile;
+  onDone: (u: UserProfile) => void;
+}) {
+  const C = useC();
+  const [step, setStep] = useState<"prompt" | "scanning" | "success">("prompt");
+
+  const handleActivate = async () => {
+    setStep("scanning");
+    await registerBiometric(user.id, `${user.prenom} ${user.nom}`).catch(() => {});
+    setStep("success");
+    setTimeout(() => onDone(user), 1000);
+  };
+
+  const handleSkip = () => onDone(user);
+
+  return (
+    <div style={{
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      minHeight: "100%", padding: "40px 32px",
+      textAlign: "center",
+      animation: "fadeup .3s ease both",
+    }}>
+      <style>{`
+        @keyframes bioGlow {
+          0%,100% { box-shadow: 0 0 0 10px var(--gold-bg-55), 0 0 0 24px var(--gold-bg-22); }
+          50%      { box-shadow: 0 0 0 18px var(--gold-bg-55), 0 0 0 36px var(--gold-bg-22); }
+        }
+      `}</style>
+
+      {step === "success" ? (
+        <>
+          <div style={{
+            width: 100, height: 100, borderRadius: "50%",
+            background: "rgba(34,197,94,.1)",
+            border: "2px solid rgba(34,197,94,.35)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            marginBottom: 24, animation: "checkPop .4s cubic-bezier(.2,.8,.3,1) both",
+          }}>
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none">
+              <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 22, color: C.text, marginBottom: 8 }}>Touch ID activé</div>
+          <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.6 }}>
+            À votre prochaine visite, une simple empreinte suffit.
+          </div>
+        </>
+      ) : step === "scanning" ? (
+        <>
+          <div style={{
+            width: 120, height: 120, borderRadius: "50%",
+            background: C.goldBg,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            marginBottom: 24, position: "relative",
+          }}>
+            <div style={{
+              position: "absolute", inset: -10, borderRadius: "50%",
+              border: `2px solid ${C.gold}`, opacity: 0.3,
+              animation: "pendingPulse 1s ease-in-out infinite",
+            }}/>
+            <div style={{
+              position: "absolute", inset: -22, borderRadius: "50%",
+              border: `1.5px solid ${C.gold}`, opacity: 0.12,
+              animation: "pendingPulse 1s ease-in-out .25s infinite",
+            }}/>
+            <FingerprintIcon size={64} color={C.gold} />
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 20, color: C.text, marginBottom: 8 }}>Scan en cours…</div>
+          <div style={{ fontSize: 14, color: C.sub }}>Posez votre doigt ou regardez l'écran</div>
+        </>
+      ) : (
+        <>
+          {/* Wordmark */}
+          <div style={{ fontSize: 12, letterSpacing: "3px", color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 40 }}>
+            Civique
+          </div>
+
+          {/* Fingerprint hero */}
+          <div style={{
+            width: 130, height: 130, borderRadius: "50%",
+            background: C.goldBg,
+            border: `1.5px solid ${C.gold}22`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            marginBottom: 28,
+            boxShadow: `0 0 0 14px ${C.goldBg}88, 0 0 0 28px ${C.goldBg}33`,
+          }}>
+            <FingerprintIcon size={72} color={C.gold} />
+          </div>
+
+          <div style={{ fontWeight: 700, fontSize: 22, color: C.text, marginBottom: 10, letterSpacing: "-.4px" }}>
+            Activer Touch ID
+          </div>
+          <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.65, maxWidth: 280, marginBottom: 40 }}>
+            Connectez-vous en un toucher à vos prochaines visites — sans matricule ni mot de passe.
+          </div>
+
+          <div style={{ width: "100%", maxWidth: 320 }}>
+            <button
+              onClick={handleActivate}
+              style={{
+                width: "100%", padding: "16px",
+                borderRadius: 16, border: "none",
+                background: C.gold, color: "#fff",
+                fontSize: 16, fontWeight: 700,
+                fontFamily: "var(--f-sans)", cursor: "pointer",
+                marginBottom: 12,
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              }}
+            >
+              <FingerprintIcon size={20} color="#fff" />
+              Activer Touch ID
+            </button>
+
+            <button
+              onClick={handleSkip}
+              style={{
+                width: "100%", padding: "14px",
+                borderRadius: 16,
+                border: `1.5px solid ${C.border2}`,
+                background: "none", color: C.sub,
+                fontSize: 14, fontWeight: 600,
+                fontFamily: "var(--f-sans)", cursor: "pointer",
+              }}
+            >
+              Pas maintenant
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 // ─── ROOT AUTH GATE ───────────────────────────────────────────
 
-type AuthScreen = "landing" | "signin" | "step1" | "step2" | "processing";
+type AuthScreen = "landing" | "signin" | "step1" | "step2" | "processing" | "biometric_setup";
 
 export default function AuthFlow({ onAuth }: { onAuth: (user: UserProfile) => void }) {
   const C = useC();
-  const [screen, setScreen]   = useState<AuthScreen>("landing");
-  const [step1,  setStep1]    = useState<Step1Data | null>(null);
+  const [screen, setScreen]         = useState<AuthScreen>("landing");
+  const [step1,  setStep1]          = useState<Step1Data | null>(null);
+  const [rehydratedUser, setRehydratedUser] = useState<UserProfile | null>(null);
+  const [booting, setBooting]       = useState(true); // true while checking localStorage
+  const pendingAuthUser             = useRef<UserProfile | null>(null); // user waiting for bio setup
 
-  // No persistent session — fresh login required each visit.
+  // Keep onAuth stable via ref — declared here so the mount effect can use it
+  const onAuthRef = useRef(onAuth);
+  onAuthRef.current = onAuth;
+
+    // On mount: check if there is a pending registration to resume, or an
+  // approved session to restore.
+  useEffect(() => {
+    const resume = async () => {
+      try {
+        const raw = localStorage.getItem(PENDING_KEY);
+        if (raw) {
+          const { id } = JSON.parse(raw) as { id: string };
+          if (id) {
+            const { user } = await getUserById(id);
+            if (user) {
+              if (user.status === "verified") {
+                localStorage.removeItem(PENDING_KEY);
+                if (!localStorage.getItem(BIO_KEY)) {
+                  // Not yet enrolled — show bio setup before landing
+                  pendingAuthUser.current = user;
+                  setScreen("biometric_setup");
+                  setBooting(false);
+                } else {
+                  // Already enrolled — land directly
+                  setBooting(false);
+                  onAuthRef.current(user);
+                }
+                return;
+              }
+              // Still pending — resume the waiting screen
+              setRehydratedUser(user);
+              setScreen("processing");
+              setBooting(false);
+              return;
+            }
+          }
+        }
+      } catch {}
+      setBooting(false);
+    };
+    resume();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleStep1 = (data: Step1Data) => {
     setStep1(data);
@@ -1557,11 +2313,7 @@ export default function AuthFlow({ onAuth }: { onAuth: (user: UserProfile) => vo
       badgePhoto:  photo,   // base64 stored in DB for admin review
       status:      "pending", // admin must verify before full access
       avatarColor: randomColor(),
-      badge:       step1.role === "Membre CEP" || step1.role === "CEP — Responsable désigné·e"
-                     ? "gold"
-                     : step1.role === "Délégué·e de classe"
-                     ? "blue"
-                     : step1.role === "Rectorat"
+      badge:       (step1.role === "Rectorat" || step1.role === "Décanat")
                      ? "gray"
                      : null,
       createdAt:   new Date().toISOString(),
@@ -1570,13 +2322,38 @@ export default function AuthFlow({ onAuth }: { onAuth: (user: UserProfile) => vo
     setScreen("processing");
   };
 
-  // Keep onAuth stable via ref so ProcessingScreen callback never stales
-  const onAuthRef = useRef(onAuth);
-  onAuthRef.current = onAuth; // sync every render, no useEffect needed
-
-  const handleSignInSuccess = (user: UserProfile) => {
+  const handleBioSetupDone = (user: UserProfile) => {
     onAuthRef.current(user);
   };
+
+  // After sign-in: if not yet enrolled, show bio setup first
+  const handleSignInSuccess = (user: UserProfile) => {
+    if (!localStorage.getItem(BIO_KEY)) {
+      pendingAuthUser.current = user;
+      setScreen("biometric_setup");
+    } else {
+      onAuthRef.current(user);
+    }
+  };
+
+  // After ProcessingScreen approval: route through bio setup
+  const handleProcessingDone = (user: UserProfile) => {
+    if (!localStorage.getItem(BIO_KEY)) {
+      pendingAuthUser.current = user;
+      setScreen("biometric_setup");
+    } else {
+      onAuthRef.current(user);
+    }
+  };
+  // Keep as ref so ProcessingScreen's closure sees latest version
+  const processingDoneRef = useRef(handleProcessingDone);
+  processingDoneRef.current = handleProcessingDone;
+
+  // While checking localStorage, show nothing (avoids flash of landing)
+  if (booting) return null;
+
+  // Determine which user to pass to ProcessingScreen
+  const processingUser = rehydratedUser ?? pendingUserRef.current;
 
   return (
     <>
@@ -1588,6 +2365,15 @@ export default function AuthFlow({ onAuth }: { onAuth: (user: UserProfile) => vo
         @keyframes sheetUp {
           from { transform: translateY(100%); }
           to   { transform: translateY(0); }
+        }
+        @keyframes checkPop {
+          0%   { transform: scale(0); opacity: 0; }
+          60%  { transform: scale(1.2); opacity: 1; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes pendingPulse {
+          0%,100% { opacity: 1; transform: scale(1); }
+          50%     { opacity: .55; transform: scale(.88); }
         }
         ::-webkit-scrollbar { display: none; }
       `}</style>
@@ -1628,10 +2414,18 @@ export default function AuthFlow({ onAuth }: { onAuth: (user: UserProfile) => vo
           />
         )}
 
-        {screen === "processing" && pendingUserRef.current && (
+        {screen === "processing" && processingUser && (
           <ProcessingScreen
-            user={pendingUserRef.current}
-            onDoneRef={onAuthRef}
+            user={processingUser}
+            onDoneRef={processingDoneRef}
+            rehydrated={!!rehydratedUser}
+          />
+        )}
+
+        {screen === "biometric_setup" && pendingAuthUser.current && (
+          <BiometricSetupScreen
+            user={pendingAuthUser.current}
+            onDone={handleBioSetupDone}
           />
         )}
       </div>
