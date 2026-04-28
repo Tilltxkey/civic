@@ -628,30 +628,37 @@ function LandingScreen({
 
 // ─── SCREEN: SIGN IN ─────────────────────────────────────────
 
-// ─── FINGERPRINT ICON ────────────────────────────────────────
-function FingerprintIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
+// ─── PASSKEY ICON (FIDO Alliance standard: person + key) ────
+function PasskeyIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
+  // Scalable unit so proportions hold at any size
+  const u = size / 48;
   return (
-    <svg width={size} height={size} viewBox="0 0 56 56" fill="none">
-      <path d="M28 6C17.5 6 9 14.5 9 25c0 9.8 5.2 18.3 12.9 23" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
-      <path d="M28 6c10.5 0 19 8.5 19 19 0 9.8-5.2 18.3-12.9 23" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
-      <path d="M28 14c-6.1 0-11 4.9-11 11 0 7.2 2.3 13.9 6.2 19.3" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
-      <path d="M28 14c6.1 0 11 4.9 11 11 0 7.2-2.3 13.9-6.2 19.3" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
-      <path d="M28 22c-1.7 0-3 1.3-3 3 0 5.2 1.4 10.1 3.8 14.4" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
-      <path d="M28 22c1.7 0 3 1.3 3 3 0 5.2-1.4 10.1-3.8 14.4" stroke={color} strokeWidth="2.8" strokeLinecap="round"/>
-      <path d="M19 10.5C14.2 13.5 11 18.9 11 25" stroke={color} strokeWidth="2.4" strokeLinecap="round" opacity=".55"/>
-      <path d="M37 10.5C41.8 13.5 45 18.9 45 25" stroke={color} strokeWidth="2.4" strokeLinecap="round" opacity=".55"/>
-      <circle cx="28" cy="25" r="2" fill={color}/>
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
+      {/* Person head */}
+      <circle cx="17" cy="12" r="6" stroke={color} strokeWidth={2.2 * (48 / size < 1 ? 1 : 48/size * 0.6)} fill="none"/>
+      {/* Person shoulders */}
+      <path d="M5 34c0-6.6 5.4-12 12-12s12 5.4 12 12" stroke={color} strokeWidth={2.2 * (48 / size < 1 ? 1 : 48/size * 0.6)} strokeLinecap="round" fill="none"/>
+      {/* Key ring */}
+      <circle cx="37" cy="30" r="6" stroke={color} strokeWidth={2.2 * (48 / size < 1 ? 1 : 48/size * 0.6)} fill="none"/>
+      {/* Key shaft */}
+      <path d="M31.5 30H22" stroke={color} strokeWidth={2.2 * (48 / size < 1 ? 1 : 48/size * 0.6)} strokeLinecap="round"/>
+      {/* Key teeth */}
+      <path d="M22 30v3M26 30v2" stroke={color} strokeWidth={2.2 * (48 / size < 1 ? 1 : 48/size * 0.6)} strokeLinecap="round"/>
     </svg>
   );
 }
 
-// ─── PASSKEY / BIOMETRIC HELPERS ────────────────────────────
-// Uses WebAuthn platform authenticator (Face ID, fingerprint, PIN).
-// The browser/OS handles the actual biometric UI natively.
-// We store { userId } in localStorage so we can fetch the user after
-// a successful assertion. The credential is stored by the browser.
+// Keep FingerprintIcon as alias for any missed references
+const FingerprintIcon = PasskeyIcon;
 
-const BIO_KEY = "civique_bio_v1";
+// ─── PASSKEY HELPERS ─────────────────────────────────────────
+// Full WebAuthn passkey flow. The OS/browser handles ALL UI:
+//   • "Save passkey to Google Password Manager / iCloud Keychain?"
+//   • "Sign in as [Name]? Use fingerprint / Face ID / PIN"
+// We only store { userId } so we can fetch the user from DB after auth.
+// No scanning animation needed — the OS takes over immediately.
+
+const BIO_KEY = "civique_passkey_v1";
 
 function base64url(buf: ArrayBuffer): string {
   return btoa(String.fromCharCode(...new Uint8Array(buf)))
@@ -661,13 +668,15 @@ function base64url(buf: ArrayBuffer): string {
 function getRpId(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const h = window.location.hostname;
-  // On localhost or raw IP, omit rpId — browser uses origin as default
   return (h === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(h)) ? undefined : h;
 }
 
-// Register a passkey — browser shows native "Save passkey?" dialog
+// ── REGISTER ──────────────────────────────────────────────────
+// Called after approval. Creates a discoverable resident key so
+// the browser can offer the account automatically next visit.
 async function registerPasskey(userId: string, userName: string): Promise<boolean> {
   try {
+    if (!window.PublicKeyCredential) return false;
     const rpId = getRpId();
     const cred = await navigator.credentials.create({
       publicKey: {
@@ -685,32 +694,32 @@ async function registerPasskey(userId: string, userName: string): Promise<boolea
         authenticatorSelection: {
           authenticatorAttachment: "platform",
           userVerification: "preferred",
-          residentKey: "preferred",  // enables discoverable creds (auto account select)
+          residentKey: "required", // discoverable = browser shows account picker
         },
         timeout: 120000,
       },
     }) as PublicKeyCredential | null;
     if (!cred) return false;
-    // Store userId so we can look up the account after future assertions
     localStorage.setItem(BIO_KEY, JSON.stringify({
       userId,
       credentialId: base64url(cred.rawId),
-      rpId: rpId ?? window.location.hostname,
     }));
     return true;
   } catch (e) {
-    console.warn("[Civique] registerPasskey failed:", e);
+    console.warn("[Civique] registerPasskey:", e);
     return false;
   }
 }
 
-// Authenticate — browser shows native account picker + biometric/PIN prompt
-// Uses mediation:"optional" so the OS auto-selects if only one passkey exists
+// ── AUTHENTICATE ──────────────────────────────────────────────
+// On sign-in: if we have a stored credentialId, pass it so the OS
+// auto-selects the account (no picker needed). If not, pass empty
+// allowCredentials so the OS shows its discoverable credential UI.
 async function authenticatePasskey(): Promise<string | null> {
   try {
-    const raw = localStorage.getItem(BIO_KEY);
+    if (!window.PublicKeyCredential) return null;
     const rpId = getRpId();
-    // Build allowCredentials from stored credential (faster, skips account picker)
+    const raw = localStorage.getItem(BIO_KEY);
     const allowCredentials: PublicKeyCredentialDescriptor[] = [];
     let storedUserId: string | null = null;
     if (raw) {
@@ -726,20 +735,22 @@ async function authenticatePasskey(): Promise<string | null> {
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         ...(rpId ? { rpId } : {}),
-        allowCredentials,
+        allowCredentials, // empty = discoverable picker; filled = direct auth
         userVerification: "preferred",
         timeout: 120000,
       },
     });
     if (!assertion) return null;
+    // If no stored userId (passkey from another device/browser), we can't
+    // look up by user — they'll need to sign in manually once to link.
     return storedUserId;
   } catch (e) {
-    console.warn("[Civique] authenticatePasskey failed:", e);
+    console.warn("[Civique] authenticatePasskey:", e);
     return null;
   }
 }
 
-// Keep old names as aliases so call sites don't need updating
+// Aliases for backward compat with call sites
 const registerBiometric = registerPasskey;
 const authenticateWithBiometric = authenticatePasskey;
 
@@ -896,7 +907,7 @@ function SignInScreen({
             <div style={{ fontSize: 13, color: C.dim, lineHeight: 1.5, textAlign: "center", maxWidth: 240 }}>
               {bioResult === "success" ? "Connexion en cours…"
                 : bioResult === "fail"  ? "Réessayez ou utilisez le formulaire"
-                : "Appuyez pour utiliser votre empreinte ou Face ID"}
+                : "Votre appareil va vous identifier automatiquement"}
             </div>
           </button>
 
@@ -1049,7 +1060,7 @@ function SignInScreen({
                 <div style={{ fontSize: 12, color: C.dim, marginTop: 1 }}>
                   {bioResult === "success" ? "Connexion en cours…"
                     : bioResult === "fail"  ? "Réessayez ou utilisez le formulaire"
-                    : "Empreinte · Face ID · PIN"}
+                    : "Empreinte · Face ID · PIN · Clé d'accès"}
                 </div>
               </div>
             </button>
@@ -1195,7 +1206,6 @@ function Step1Screen({
           <StyledSelect value={d.sexe} onChange={v => set("sexe", v)} error={errors.sexe}>
             <option value="M">Masculin</option>
             <option value="F">Féminin</option>
-            <option value="N/A">N/A</option>
           </StyledSelect>
         </FieldWrap>
 
@@ -1689,18 +1699,6 @@ function Step2Screen({
             Une photo est requise pour continuer
           </div>
         )}
-        {/* Temporary skip — low memory fallback */}
-        <button
-          onClick={() => onSubmit("__skipped__")}
-          style={{
-            display: "block", margin: "14px auto 0",
-            background: "none", border: "none",
-            fontSize: 11, color: C.border2,
-            cursor: "pointer", fontFamily: "var(--f-sans)",
-          }}
-        >
-          passer
-        </button>
       </div>
     </div>
   );
@@ -2110,10 +2108,10 @@ function BiometricSetupScreen({
           </div>
 
           <div style={{ fontWeight: 700, fontSize: 22, color: C.text, marginBottom: 12, letterSpacing: "-.4px" }}>
-            Connexion rapide
+            Connexion sans mot de passe
           </div>
           <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.7, maxWidth: 270, marginBottom: 44 }}>
-            Enregistrez un accès biométrique. À votre prochaine visite, votre appareil vous connectera sans rien saisir.
+            Enregistrez un accès par empreinte, Face ID ou PIN. La prochaine fois, votre appareil vous connectera automatiquement — sans rien saisir.
           </div>
 
           <div style={{ width: "100%", maxWidth: 320 }}>
@@ -2129,8 +2127,8 @@ function BiometricSetupScreen({
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
               }}
             >
-              <FingerprintIcon size={20} color="#fff" />
-              Activer
+              <PasskeyIcon size={20} color="#fff" />
+              Enregistrer un accès rapide
             </button>
 
             <button
