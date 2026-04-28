@@ -645,11 +645,11 @@ function FingerprintIcon({ size = 24, color = "currentColor" }: { size?: number;
   );
 }
 
-// ─── BIOMETRIC HELPERS ───────────────────────────────────────
-// We store { userId, credentialId } in localStorage after a successful
-// manual login + WebAuthn registration. On subsequent visits, we use
-// navigator.credentials.get() to verify presence/liveness, then fetch
-// the user from DB by stored userId — no password transmitted.
+// ─── PASSKEY / BIOMETRIC HELPERS ────────────────────────────
+// Uses WebAuthn platform authenticator (Face ID, fingerprint, PIN).
+// The browser/OS handles the actual biometric UI natively.
+// We store { userId } in localStorage so we can fetch the user after
+// a successful assertion. The credential is stored by the browser.
 
 const BIO_KEY = "civique_bio_v1";
 
@@ -658,44 +658,40 @@ function base64url(buf: ArrayBuffer): string {
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
-async function isBiometricAvailable(): Promise<boolean> {
-  try {
-    if (typeof window === "undefined") return false;
-    if (!window.PublicKeyCredential) return false;
-    return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-  } catch { return false; }
+function getRpId(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const h = window.location.hostname;
+  // On localhost or raw IP, omit rpId — browser uses origin as default
+  return (h === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(h)) ? undefined : h;
 }
 
-async function registerBiometric(userId: string, userName: string): Promise<boolean> {
+// Register a passkey — browser shows native "Save passkey?" dialog
+async function registerPasskey(userId: string, userName: string): Promise<boolean> {
   try {
-    const challenge = crypto.getRandomValues(new Uint8Array(32));
-    const hostname = window.location.hostname;
-    // On localhost/IP, omit rpId so the browser uses its default
-    const rpId = (hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname))
-      ? undefined
-      : hostname;
+    const rpId = getRpId();
     const cred = await navigator.credentials.create({
       publicKey: {
-        challenge,
-        rp: { name: "Civique", ...(rpId ? { id: rpId } : {}) },
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rp: { name: "Civique FDSE", ...(rpId ? { id: rpId } : {}) },
         user: {
           id: new TextEncoder().encode(userId),
           name: userName,
           displayName: userName,
         },
         pubKeyCredParams: [
-          { type: "public-key", alg: -7 },
-          { type: "public-key", alg: -257 },
+          { type: "public-key", alg: -7 },   // ES256
+          { type: "public-key", alg: -257 },  // RS256
         ],
         authenticatorSelection: {
           authenticatorAttachment: "platform",
-          userVerification: "preferred", // "preferred" is more compatible than "required"
-          residentKey: "preferred",
+          userVerification: "preferred",
+          residentKey: "preferred",  // enables discoverable creds (auto account select)
         },
-        timeout: 60000,
+        timeout: 120000,
       },
     }) as PublicKeyCredential | null;
     if (!cred) return false;
+    // Store userId so we can look up the account after future assertions
     localStorage.setItem(BIO_KEY, JSON.stringify({
       userId,
       credentialId: base64url(cred.rawId),
@@ -703,41 +699,49 @@ async function registerBiometric(userId: string, userName: string): Promise<bool
     }));
     return true;
   } catch (e) {
-    console.warn("[Civique] registerBiometric failed:", e);
+    console.warn("[Civique] registerPasskey failed:", e);
     return false;
   }
 }
 
-async function authenticateWithBiometric(): Promise<string | null> {
+// Authenticate — browser shows native account picker + biometric/PIN prompt
+// Uses mediation:"optional" so the OS auto-selects if only one passkey exists
+async function authenticatePasskey(): Promise<string | null> {
   try {
     const raw = localStorage.getItem(BIO_KEY);
-    if (!raw) return null;
-    const { userId, credentialId, rpId } = JSON.parse(raw) as { userId: string; credentialId: string; rpId?: string };
-    const challenge = crypto.getRandomValues(new Uint8Array(32));
-    const credIdBytes = Uint8Array.from(
-      atob(credentialId.replace(/-/g, "+").replace(/_/g, "/")),
-      c => c.charCodeAt(0)
-    );
-    const hostname = window.location.hostname;
-    const useRpId = (hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname))
-      ? undefined
-      : (rpId ?? hostname);
+    const rpId = getRpId();
+    // Build allowCredentials from stored credential (faster, skips account picker)
+    const allowCredentials: PublicKeyCredentialDescriptor[] = [];
+    let storedUserId: string | null = null;
+    if (raw) {
+      const stored = JSON.parse(raw) as { userId: string; credentialId: string };
+      storedUserId = stored.userId;
+      const bytes = Uint8Array.from(
+        atob(stored.credentialId.replace(/-/g, "+").replace(/_/g, "/")),
+        c => c.charCodeAt(0)
+      );
+      allowCredentials.push({ type: "public-key", id: bytes });
+    }
     const assertion = await navigator.credentials.get({
       publicKey: {
-        challenge,
-        ...(useRpId ? { rpId: useRpId } : {}),
-        allowCredentials: [{ type: "public-key", id: credIdBytes }],
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        ...(rpId ? { rpId } : {}),
+        allowCredentials,
         userVerification: "preferred",
-        timeout: 60000,
+        timeout: 120000,
       },
     });
     if (!assertion) return null;
-    return userId;
+    return storedUserId;
   } catch (e) {
-    console.warn("[Civique] authenticateWithBiometric failed:", e);
+    console.warn("[Civique] authenticatePasskey failed:", e);
     return null;
   }
 }
+
+// Keep old names as aliases so call sites don't need updating
+const registerBiometric = registerPasskey;
+const authenticateWithBiometric = authenticatePasskey;
 
 function SignInScreen({
   onBack, onSuccess,
@@ -750,13 +754,11 @@ function SignInScreen({
   const [nom, setNom]               = useState("");
   const [err, setErr]               = useState("");
   const [loading, setLoading]       = useState(false);
-  const [bioAvail, setBioAvail]     = useState(false);
-  const [bioSaved, setBioSaved]     = useState(false);
+  const [bioSaved, setBioSaved]   = useState(false);
   const [bioLoading, setBioLoading] = useState(false);
-  const [bioState, setBioState]     = useState<"idle"|"scanning"|"success"|"fail">("idle");
+  const [bioResult, setBioResult] = useState<"idle"|"success"|"fail">("idle");
 
   useEffect(() => {
-    isBiometricAvailable().then(ok => setBioAvail(ok));
     setBioSaved(!!localStorage.getItem(BIO_KEY));
   }, []);
 
@@ -795,29 +797,29 @@ function SignInScreen({
   };
 
   const handleBiometric = async () => {
-    setBioState("scanning");
+    // OS takes over — shows native biometric/PIN prompt
     setBioLoading(true);
     setErr("");
-    const userId = await authenticateWithBiometric();
+    const userId = await authenticatePasskey();
     if (!userId) {
-      setBioState("fail");
       setBioLoading(false);
-      setTimeout(() => setBioState("idle"), 2000);
-      setErr("Authentification biométrique échouée. Connectez-vous manuellement.");
+      setBioResult("fail");
+      setTimeout(() => setBioResult("idle"), 2500);
+      setErr("Connexion annulée. Réessayez ou connectez-vous manuellement.");
       return;
     }
     const { user } = await getUserById(userId);
     setBioLoading(false);
     if (!user) {
-      setBioState("fail");
-      setTimeout(() => setBioState("idle"), 2000);
+      setBioResult("fail");
+      setTimeout(() => setBioResult("idle"), 2500);
       setErr("Compte introuvable. Reconnectez-vous manuellement.");
       localStorage.removeItem(BIO_KEY);
       setBioSaved(false);
       return;
     }
-    setBioState("success");
-    setTimeout(() => onSuccess(user), 600);
+    setBioResult("success");
+    setTimeout(() => onSuccess(user), 400);
   };
 
   // ── Enrolled: show fingerprint as the main UI ────────────
@@ -855,78 +857,46 @@ function SignInScreen({
               padding: 0, WebkitTapHighlightColor: "transparent",
             }}
           >
-            {/* Animated glow ring */}
             <div style={{
-              position: "relative",
-              width: 140, height: 140,
+              width: 140, height: 140, borderRadius: "50%",
+              background: bioResult === "success" ? "rgba(34,197,94,.1)"
+                : bioResult === "fail"    ? "rgba(232,65,42,.08)"
+                : C.goldBg,
+              border: `2px solid ${
+                bioResult === "success" ? "rgba(34,197,94,.4)"
+                : bioResult === "fail"  ? "rgba(232,65,42,.3)"
+                : C.gold + "33"
+              }`,
               display: "flex", alignItems: "center", justifyContent: "center",
               marginBottom: 28,
+              boxShadow: bioResult === "idle"
+                ? `0 0 0 16px ${C.goldBg}55, 0 0 0 32px ${C.goldBg}22`
+                : "none",
+              transition: "background .3s, border-color .3s, box-shadow .3s",
             }}>
-              {/* Outer glow rings */}
-              {bioState === "scanning" && <>
-                <div style={{
-                  position: "absolute", inset: -14, borderRadius: "50%",
-                  border: `2px solid ${C.gold}`,
-                  opacity: 0.25,
-                  animation: "pendingPulse 1s ease-in-out infinite",
-                }}/>
-                <div style={{
-                  position: "absolute", inset: -26, borderRadius: "50%",
-                  border: `1.5px solid ${C.gold}`,
-                  opacity: 0.12,
-                  animation: "pendingPulse 1s ease-in-out .25s infinite",
-                }}/>
-              </>}
-              {/* Circle bg */}
-              <div style={{
-                width: 140, height: 140, borderRadius: "50%",
-                background: bioState === "success"
-                  ? "rgba(34,197,94,.1)"
-                  : bioState === "fail"
-                  ? "rgba(232,65,42,.08)"
-                  : C.goldBg,
-                border: `2px solid ${
-                  bioState === "success" ? "rgba(34,197,94,.4)"
-                  : bioState === "fail" ? "rgba(232,65,42,.3)"
-                  : C.gold + "33"
-                }`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                transition: "background .3s, border-color .3s",
-                boxShadow: bioState === "idle" || bioState === "scanning"
-                  ? `0 0 0 16px ${C.goldBg}55, 0 0 0 32px ${C.goldBg}22`
-                  : "none",
-              }}>
-                {bioState === "success"
-                  ? <svg width="52" height="52" viewBox="0 0 24 24" fill="none" style={{ animation: "checkPop .4s cubic-bezier(.2,.8,.3,1) both" }}>
-                      <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  : bioState === "fail"
-                  ? <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-                      <path d="M18 6L6 18M6 6l12 12" stroke="#E8412A" strokeWidth="2.2" strokeLinecap="round"/>
-                    </svg>
-                  : <FingerprintIcon size={72} color={C.gold} />
-                }
-              </div>
+              {bioResult === "success"
+                ? <svg width="52" height="52" viewBox="0 0 24 24" fill="none" style={{ animation: "checkPop .4s cubic-bezier(.2,.8,.3,1) both" }}>
+                    <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                : bioResult === "fail"
+                ? <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+                    <path d="M18 6L6 18M6 6l12 12" stroke="#E8412A" strokeWidth="2.2" strokeLinecap="round"/>
+                  </svg>
+                : <FingerprintIcon size={72} color={C.gold} />
+              }
             </div>
 
-            {/* Label */}
             <div style={{
               fontWeight: 700, fontSize: 20, letterSpacing: "-.3px",
-              color: bioState === "success" ? "#22C55E"
-                : bioState === "fail" ? "#E8412A"
-                : C.text,
+              color: bioResult === "success" ? "#22C55E" : bioResult === "fail" ? "#E8412A" : C.text,
               marginBottom: 8, transition: "color .25s",
             }}>
-              {bioState === "scanning" ? "Scan en cours…"
-                : bioState === "success" ? "Bienvenue !"
-                : bioState === "fail"    ? "Non reconnu"
-                : "Poser le doigt"}
+              {bioResult === "success" ? "Bienvenue !" : bioResult === "fail" ? "Annulé" : "Se connecter"}
             </div>
             <div style={{ fontSize: 13, color: C.dim, lineHeight: 1.5, textAlign: "center", maxWidth: 240 }}>
-              {bioState === "scanning" ? "Posez votre doigt ou regardez l'écran"
-                : bioState === "success" ? "Connexion en cours…"
-                : bioState === "fail"    ? "Essayez de nouveau ou connectez-vous manuellement"
-                : "Touch ID · Face ID · Empreinte"}
+              {bioResult === "success" ? "Connexion en cours…"
+                : bioResult === "fail"  ? "Réessayez ou utilisez le formulaire"
+                : "Appuyez pour utiliser votre empreinte ou Face ID"}
             </div>
           </button>
 
@@ -1033,14 +1003,12 @@ function SignInScreen({
                 padding: "15px",
                 borderRadius: 14,
                 border: `1.5px solid ${
-                  bioState === "success" ? "#22C55E"
-                  : bioState === "fail"  ? "#E8412A"
+                  bioResult === "success" ? "#22C55E"
+                  : bioResult === "fail"  ? "#E8412A"
                   : C.border2
                 }`,
-                background: bioState === "success"
-                  ? "rgba(34,197,94,.08)"
-                  : bioState === "fail"
-                  ? "rgba(232,65,42,.06)"
+                background: bioResult === "success" ? "rgba(34,197,94,.08)"
+                  : bioResult === "fail"   ? "rgba(232,65,42,.06)"
                   : C.card,
                 cursor: bioLoading ? "not-allowed" : "pointer",
                 transition: "border-color .2s, background .2s",
@@ -1048,60 +1016,40 @@ function SignInScreen({
                 fontFamily: "var(--f-sans)",
               }}
             >
-              {/* Icon */}
               <div style={{
-                width: 36, height: 36,
-                borderRadius: 10,
-                background: bioState === "success"
-                  ? "rgba(34,197,94,.14)"
-                  : bioState === "fail"
-                  ? "rgba(232,65,42,.1)"
+                width: 36, height: 36, borderRadius: 10,
+                background: bioResult === "success" ? "rgba(34,197,94,.14)"
+                  : bioResult === "fail" ? "rgba(232,65,42,.1)"
                   : C.goldBg,
                 display: "flex", alignItems: "center", justifyContent: "center",
-                flexShrink: 0,
-                transition: "background .2s",
+                flexShrink: 0, transition: "background .2s",
               }}>
-                {bioState === "scanning" ? (
-                  /* Pulse ring while scanning */
-                  <div style={{
-                    width: 20, height: 20, borderRadius: "50%",
-                    border: `2.5px solid ${C.gold}`,
-                    animation: "pendingPulse 1s ease-in-out infinite",
-                  }}/>
-                ) : bioState === "success" ? (
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                    <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                ) : bioState === "fail" ? (
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                    <path d="M18 6L6 18M6 6l12 12" stroke="#E8412A" strokeWidth="2.2" strokeLinecap="round"/>
-                  </svg>
-                ) : (
-                  <FingerprintIcon size={22} color={C.gold} />
-                )}
+                {bioResult === "success"
+                  ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  : bioResult === "fail"
+                  ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M18 6L6 18M6 6l12 12" stroke="#E8412A" strokeWidth="2.2" strokeLinecap="round"/>
+                    </svg>
+                  : <FingerprintIcon size={22} color={C.gold} />
+                }
               </div>
 
-              {/* Label */}
               <div style={{ textAlign: "left" }}>
                 <div style={{
                   fontSize: 14, fontWeight: 700,
-                  color: bioState === "success" ? "#22C55E"
-                    : bioState === "fail" ? "#E8412A"
-                    : C.text,
+                  color: bioResult === "success" ? "#22C55E" : bioResult === "fail" ? "#E8412A" : C.text,
                   transition: "color .2s",
                 }}>
-                  {bioState === "scanning" ? "Scan en cours…"
-                    : bioState === "success" ? "Identité confirmée"
-                    : bioState === "fail"    ? "Échec de reconnaissance"
-                    : bioSaved              ? "Connexion biométrique"
-                    : "Activer la biométrie"}
+                  {bioResult === "success" ? "Identité confirmée"
+                    : bioResult === "fail"  ? "Annulé"
+                    : "Connexion biométrique"}
                 </div>
                 <div style={{ fontSize: 12, color: C.dim, marginTop: 1 }}>
-                  {bioState === "scanning" ? "Posez votre doigt ou regardez l'écran"
-                    : bioState === "success" ? "Connexion en cours…"
-                    : bioState === "fail"    ? "Réessayez ou utilisez le formulaire"
-                    : bioSaved              ? "Empreinte · Face ID · PIN"
-                    : "Se connectera sans matricule à l'avenir"}
+                  {bioResult === "success" ? "Connexion en cours…"
+                    : bioResult === "fail"  ? "Réessayez ou utilisez le formulaire"
+                    : "Empreinte · Face ID · PIN"}
                 </div>
               </div>
             </button>
@@ -2099,16 +2047,19 @@ function BiometricSetupScreen({
   onDone: (u: UserProfile) => void;
 }) {
   const C = useC();
-  const [step, setStep] = useState<"prompt" | "scanning" | "success">("prompt");
+  const [done, setDone] = useState(false);
 
   const handleActivate = async () => {
-    setStep("scanning");
-    await registerBiometric(user.id, `${user.prenom} ${user.nom}`).catch(() => {});
-    setStep("success");
-    setTimeout(() => onDone(user), 1000);
+    // Browser takes over here — shows native "Save passkey?" dialog
+    const ok = await registerPasskey(user.id, `${user.prenom} ${user.nom}`);
+    if (ok) {
+      setDone(true);
+      setTimeout(() => onDone(user), 900);
+    } else {
+      // User dismissed or device unsupported — land anyway
+      onDone(user);
+    }
   };
-
-  const handleSkip = () => onDone(user);
 
   return (
     <div style={{
@@ -2118,78 +2069,51 @@ function BiometricSetupScreen({
       textAlign: "center",
       animation: "fadeup .3s ease both",
     }}>
-      <style>{`
-        @keyframes bioGlow {
-          0%,100% { box-shadow: 0 0 0 10px var(--gold-bg-55), 0 0 0 24px var(--gold-bg-22); }
-          50%      { box-shadow: 0 0 0 18px var(--gold-bg-55), 0 0 0 36px var(--gold-bg-22); }
-        }
-      `}</style>
-
-      {step === "success" ? (
+      {done ? (
+        /* ── Passkey saved ── */
         <>
           <div style={{
-            width: 100, height: 100, borderRadius: "50%",
+            width: 96, height: 96, borderRadius: "50%",
             background: "rgba(34,197,94,.1)",
             border: "2px solid rgba(34,197,94,.35)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            marginBottom: 24, animation: "checkPop .4s cubic-bezier(.2,.8,.3,1) both",
+            marginBottom: 24,
+            animation: "checkPop .4s cubic-bezier(.2,.8,.3,1) both",
           }}>
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
               <path d="M5 13l4 4L19 7" stroke="#22C55E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
-          <div style={{ fontWeight: 700, fontSize: 22, color: C.text, marginBottom: 8 }}>Touch ID activé</div>
-          <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.6 }}>
-            À votre prochaine visite, une simple empreinte suffit.
+          <div style={{ fontWeight: 700, fontSize: 21, color: C.text, marginBottom: 8 }}>
+            Connexion rapide activée
           </div>
-        </>
-      ) : step === "scanning" ? (
-        <>
-          <div style={{
-            width: 120, height: 120, borderRadius: "50%",
-            background: C.goldBg,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            marginBottom: 24, position: "relative",
-          }}>
-            <div style={{
-              position: "absolute", inset: -10, borderRadius: "50%",
-              border: `2px solid ${C.gold}`, opacity: 0.3,
-              animation: "pendingPulse 1s ease-in-out infinite",
-            }}/>
-            <div style={{
-              position: "absolute", inset: -22, borderRadius: "50%",
-              border: `1.5px solid ${C.gold}`, opacity: 0.12,
-              animation: "pendingPulse 1s ease-in-out .25s infinite",
-            }}/>
-            <FingerprintIcon size={64} color={C.gold} />
+          <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.65 }}>
+            La prochaine fois, votre appareil vous connectera automatiquement.
           </div>
-          <div style={{ fontWeight: 700, fontSize: 20, color: C.text, marginBottom: 8 }}>Scan en cours…</div>
-          <div style={{ fontSize: 14, color: C.sub }}>Posez votre doigt ou regardez l'écran</div>
         </>
       ) : (
+        /* ── Prompt ── */
         <>
-          {/* Wordmark */}
-          <div style={{ fontSize: 12, letterSpacing: "3px", color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 40 }}>
+          <div style={{ fontSize: 11, letterSpacing: "3px", color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 44 }}>
             Civique
           </div>
 
-          {/* Fingerprint hero */}
           <div style={{
-            width: 130, height: 130, borderRadius: "50%",
+            width: 128, height: 128, borderRadius: "50%",
             background: C.goldBg,
-            border: `1.5px solid ${C.gold}22`,
+            border: `1.5px solid ${C.gold}33`,
             display: "flex", alignItems: "center", justifyContent: "center",
-            marginBottom: 28,
-            boxShadow: `0 0 0 14px ${C.goldBg}88, 0 0 0 28px ${C.goldBg}33`,
+            marginBottom: 32,
+            boxShadow: `0 0 0 16px ${C.goldBg}66, 0 0 0 32px ${C.goldBg}22`,
           }}>
-            <FingerprintIcon size={72} color={C.gold} />
+            <FingerprintIcon size={70} color={C.gold} />
           </div>
 
-          <div style={{ fontWeight: 700, fontSize: 22, color: C.text, marginBottom: 10, letterSpacing: "-.4px" }}>
-            Activer Touch ID
+          <div style={{ fontWeight: 700, fontSize: 22, color: C.text, marginBottom: 12, letterSpacing: "-.4px" }}>
+            Connexion rapide
           </div>
-          <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.65, maxWidth: 280, marginBottom: 40 }}>
-            Connectez-vous en un toucher à vos prochaines visites — sans matricule ni mot de passe.
+          <div style={{ fontSize: 14, color: C.sub, lineHeight: 1.7, maxWidth: 270, marginBottom: 44 }}>
+            Enregistrez un accès biométrique. À votre prochaine visite, votre appareil vous connectera sans rien saisir.
           </div>
 
           <div style={{ width: "100%", maxWidth: 320 }}>
@@ -2206,11 +2130,11 @@ function BiometricSetupScreen({
               }}
             >
               <FingerprintIcon size={20} color="#fff" />
-              Activer Touch ID
+              Activer
             </button>
 
             <button
-              onClick={handleSkip}
+              onClick={() => onDone(user)}
               style={{
                 width: "100%", padding: "14px",
                 borderRadius: 16,
