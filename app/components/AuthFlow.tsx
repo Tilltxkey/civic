@@ -908,9 +908,7 @@ function SignInScreen({
               fontWeight: 700, fontSize: 20, letterSpacing: "-.3px",
               color: bioResult === "success" ? "#22C55E" : bioResult === "fail" ? "#E8412A" : C.text,
               marginBottom: 8, transition: "color .25s",
-              border: `1.5px solid ${C.border2}`,
-              borderRadius: 12,
-              padding: "11px 22px",
+              textDecoration: "underline", textDecorationColor: bioResult === "success" ? "#22C55E" : bioResult === "fail" ? "#E8412A" : C.text,
             }}>
               {bioResult === "success" ? "Bienvenue !" : bioResult === "fail" ? "Annulé" : "Se connecter"}
             </div>
