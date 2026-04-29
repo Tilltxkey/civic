@@ -570,11 +570,18 @@ function LandingScreen({
           boxShadow: "0 4px 24px rgba(0,0,0,.08)",
         }}>
           {/* Ballot icon */}
-          <svg width="34" height="34" viewBox="0 0 24 24" fill="none">
-            <rect x="4" y="3" width="16" height="18" rx="2.5" fill={C.gold} opacity=".15"/>
-            <rect x="4" y="3" width="16" height="18" rx="2.5" stroke={C.gold} strokeWidth="1.5"/>
-            <path d="M8 8.5h8M8 12h8M8 15.5h5" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
+          <svg width="50" height="50" viewBox="0 0 712 707" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M330.936 33.769C346.469 25.4097 365.162 25.4107 380.695 33.77L421.598 55.7817C434.779 62.8753 449.296 67.1377 464.22 68.2964L510.529 71.8921C528.116 73.2576 543.842 83.3642 552.39 98.7944L574.898 139.425C582.152 152.519 592.06 163.954 603.988 172.998L641.003 201.059C655.059 211.716 662.824 228.72 661.673 246.322L658.642 292.671C657.665 307.608 659.818 322.585 664.964 336.641L680.931 380.26C686.994 396.825 684.334 415.327 673.85 429.512L646.24 466.866C637.343 478.903 631.058 492.666 627.787 507.273L617.637 552.6C613.782 569.813 601.541 583.941 585.052 590.206L541.631 606.703C527.638 612.019 514.909 620.199 504.261 630.719L471.217 663.363C458.668 675.76 440.733 681.026 423.474 677.381L378.026 667.785C363.381 664.692 348.25 664.692 333.604 667.785L288.157 677.381C270.898 681.026 252.963 675.76 240.414 663.363L207.37 630.719C196.721 620.199 183.993 612.019 170 606.703L126.579 590.206C110.09 583.941 97.8486 569.813 93.9941 552.6L83.8438 507.273C80.5729 492.666 74.2878 478.903 65.3906 466.866L37.7812 429.512C27.2967 415.327 24.6367 396.825 30.7002 380.26L46.667 336.641C51.8125 322.585 53.9662 307.608 52.9893 292.671L49.958 246.322C48.8068 228.72 56.5715 211.716 70.6279 201.059L107.643 172.998C119.571 163.954 129.479 152.519 136.732 139.425L159.241 98.7944C167.789 83.3643 183.515 73.2576 201.102 71.8921L247.411 68.2964C262.335 67.1377 276.852 62.8753 290.033 55.7817L330.936 33.769Z" stroke="url(#paint0_linear_7_29)" stroke-width="55"/>
+<defs>
+<linearGradient id="paint0_linear_7_29" x1="725.315" y1="358.651" x2="-13.6846" y2="358.651" gradientUnits="userSpaceOnUse">
+<stop stop-color="#B20002"/>
+<stop offset="0.504808" stop-color="#65004E"/>
+<stop offset="1" stop-color="#0D00A6"/>
+</linearGradient>
+</defs>
+</svg>
+
+
         </div>
       </div>
 
@@ -582,9 +589,9 @@ function LandingScreen({
       <div style={{ animation: "fadeup .5s ease .07s both", marginBottom: 8 }}>
         <div style={{
           fontWeight: 700, fontSize: 28, color: C.text,
-          letterSpacing: "-1px", lineHeight: 1,
+          letterSpacing: "-1px", lineHeight: 1,textAlign: "center",
         }}>
-          Civique
+          Civic
         </div>
         <div style={{
           fontSize: 11, letterSpacing: "3px", color: C.sub,
@@ -681,7 +688,7 @@ async function registerPasskey(userId: string, userName: string): Promise<boolea
     const cred = await navigator.credentials.create({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
-        rp: { name: "Civique FDSE", ...(rpId ? { id: rpId } : {}) },
+        rp: { name: "Civic FDSE", ...(rpId ? { id: rpId } : {}) },
         user: {
           id: new TextEncoder().encode(userId),
           name: userName,
@@ -706,7 +713,7 @@ async function registerPasskey(userId: string, userName: string): Promise<boolea
     }));
     return true;
   } catch (e) {
-    console.warn("[Civique] registerPasskey:", e);
+    console.warn("[Civic] registerPasskey:", e);
     return false;
   }
 }
@@ -745,7 +752,7 @@ async function authenticatePasskey(): Promise<string | null> {
     // look up by user — they'll need to sign in manually once to link.
     return storedUserId;
   } catch (e) {
-    console.warn("[Civique] authenticatePasskey:", e);
+    console.warn("[Civic] authenticatePasskey:", e);
     return null;
   }
 }
@@ -792,7 +799,7 @@ function SignInScreen({
         return;
       }
       if (error === "no_db") {
-        console.warn("[Civique] DB not ready.", {
+        console.warn("[Civic] DB not ready.", {
           url:  !!process.env.NEXT_PUBLIC_SUPABASE_URL,
           key:  !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
         });
@@ -925,10 +932,13 @@ function SignInScreen({
           <button
             onClick={() => setBioSaved(false)}
             style={{
-              marginTop: 36, background: "none", border: "none",
+              marginTop: 36,
+              background: "none",
+              border: `1.5px solid ${C.border2}`,
+              borderRadius: 12,
+              padding: "11px 22px",
               fontSize: 13, color: C.sub, cursor: "pointer",
               fontFamily: "var(--f-sans)",
-              textDecoration: "underline", textDecorationColor: C.border2,
             }}
           >
             Se connecter manuellement
@@ -1757,7 +1767,7 @@ function ProcessingScreen({
       saveUser(user).then(({ error }) => {
         if (cancelled) return;
         if (error && error !== "duplicate") {
-          console.error("[Civique] saveUser error:", error);
+          console.error("[Civic] saveUser error:", error);
         }
         try { localStorage.setItem(PENDING_KEY, JSON.stringify({ id: user.id })); } catch {}
         setPhase(1);
@@ -1944,7 +1954,7 @@ function ProcessingScreen({
         letterSpacing: "-.4px", marginBottom: 10, lineHeight: 1.3,
       }}>
         {allDone
-          ? "Bienvenue dans Civique !"
+          ? "Bienvenue dans Civic !"
           : phase === 1
             ? "Vérification en cours…"
             : "Traitement en cours…"
@@ -2093,7 +2103,7 @@ function BiometricSetupScreen({
         /* ── Prompt ── */
         <>
           <div style={{ fontSize: 11, letterSpacing: "3px", color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 44 }}>
-            Civique
+            Civic
           </div>
 
           <div style={{
