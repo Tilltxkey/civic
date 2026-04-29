@@ -195,6 +195,7 @@ export interface DBPost {
   views:      number;
   comment_count?: number;
   quoted_post?: string;  // JSON-encoded QuotedPost snapshot for cite-reposts
+  audience?: string;     // "everyone" | "field:<code>" | "class:<code>.<year>"
 }
 
 // ── Realtime subscriptions ────────────────────────────────────
@@ -250,8 +251,19 @@ export async function loadPosts(): Promise<DBPost[]> {
 
 export async function insertPost(post: DBPost): Promise<void> {
   if (!DB_READY || !supabase) return;
+  // Try inserting with all fields first. If Supabase rejects because the
+  // 'audience' column doesn't exist yet (schema not migrated), retry without it.
   const { error } = await supabase.from("civique_posts").insert(post);
-  if (error) console.error("insertPost:", error.message);
+  if (error) {
+    if (error.message.includes("audience")) {
+      // Column not yet added — strip it and retry
+      const { audience: _aud, ...postWithout } = post as any;
+      const { error: e2 } = await supabase.from("civique_posts").insert(postWithout);
+      if (e2) console.error("insertPost:", e2.message);
+    } else {
+      console.error("insertPost:", error.message);
+    }
+  }
 }
 
 export async function deletePost(id: string): Promise<void> {

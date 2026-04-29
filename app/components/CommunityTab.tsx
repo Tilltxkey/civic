@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { UserProfile } from "./AuthFlow";
 import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushLocalNotif, type DBPost, type DBComment } from "./db";
 import { MessagesScreen } from "./MessagesTab";
@@ -57,6 +57,7 @@ interface Post {
   comments:     Comment[];
   showComments: boolean;
   quotedPost?:  QuotedPost;  // set when this post is a "Citer" quote-repost
+  audience:     "everyone" | `field:${string}` | `class:${string}`;
 }
 
 function maxChars(badge: Author["badge"]): number {
@@ -410,6 +411,220 @@ function VerifiedBadge({ type, size = 15 }: { type: "gold" | "blue" | "gray"; si
   );
 }
 
+// ── AudienceSheet — bottom sheet for post visibility ─────────
+
+type AudienceValue = "everyone" | `field:${string}` | `class:${string}`;
+
+interface AudienceOption {
+  value: AudienceValue;
+  label: string;
+  sublabel: string;
+  icon: (selected: boolean) => React.ReactNode;
+}
+
+function AudienceSheet({ current, options, onPick, onClose }: {
+  current:  AudienceValue;
+  options:  AudienceOption[];
+  onPick:   (v: AudienceValue) => void;
+  onClose:  () => void;
+}) {
+  const C = useC();
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 300 }} />
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0,
+        background: C.surface, borderRadius: "20px 20px 0 0",
+        zIndex: 301, paddingBottom: "calc(24px + env(safe-area-inset-bottom))",
+        boxShadow: "0 -4px 24px rgba(0,0,0,.18)",
+        animation: "sheetUp .25s cubic-bezier(.2,.8,.3,1) both",
+      }}>
+        {/* Handle */}
+        <div style={{ width: 36, height: 4, background: C.border2, borderRadius: 99, margin: "12px auto 18px" }} />
+        {/* Title */}
+        <div style={{ padding: "0 24px 6px" }}>
+          <div style={{ fontSize: 19, fontWeight: 700, color: C.text, marginBottom: 4 }}>Qui peut voir ce post ?</div>
+          <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.5 }}>Choisissez qui pourra voir cette publication.</div>
+        </div>
+        <div style={{ height: 1, background: C.border, margin: "14px 0 6px" }} />
+        {/* Options */}
+        {options.map(opt => {
+          const selected = opt.value === current;
+          return (
+            <button key={opt.value} onClick={() => { onPick(opt.value); onClose(); }} style={{
+              display: "flex", alignItems: "center", gap: 16,
+              width: "100%", padding: "14px 24px",
+              background: selected ? `${C.gold}0f` : "none",
+              border: "none", cursor: "pointer",
+              fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
+              transition: "background .12s",
+            }}>
+              {/* Icon circle — gold when selected, muted when not */}
+              <div style={{
+                width: 46, height: 46, borderRadius: "50%",
+                background: selected ? C.gold : C.border2,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                flexShrink: 0, position: "relative",
+                transition: "background .15s",
+              }}>
+                {opt.icon(selected)}
+                {selected && (
+                  <div style={{
+                    position: "absolute", bottom: -2, right: -2,
+                    width: 17, height: 17, borderRadius: "50%",
+                    background: C.gold,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    border: `2px solid ${C.surface}`,
+                  }}>
+                    <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
+                      <path d="M1.5 4.5l2 2L7.5 2" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </div>
+                )}
+              </div>
+              {/* Label */}
+              <div style={{ textAlign: "left", flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: selected ? 700 : 500, color: selected ? C.gold : C.text }}>{opt.label}</div>
+                <div style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>{opt.sublabel}</div>
+              </div>
+              {/* Right checkmark for selected */}
+              {selected && (
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0 }}>
+                  <path d="M3.5 9l3.5 3.5 7.5-7" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ── Build audience options from author tag ────────────────────
+
+function buildAudienceOptions(me: Author): AudienceOption[] {
+  const { facultyCode, year } = parseTag(me.tag);
+  const opts: AudienceOption[] = [
+    {
+      value:    "everyone",
+      label:    "Tout le monde",
+      sublabel: "Visible par tous les étudiants",
+      icon: (sel) => (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="9" stroke={sel ? "#fff" : "#888"} strokeWidth="1.8"/>
+          <path d="M12 3c0 0-3.5 4-3.5 9s3.5 9 3.5 9M12 3c0 0 3.5 4 3.5 9s-3.5 9-3.5 9" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+          <path d="M3 12h18" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
+  ];
+  if (facultyCode) {
+    const FACULTY_LABELS: Record<string, string> = {
+      eco: "FDSE – Droit & Éco", fla: "FLA – Lettres & Arts",
+      fst: "FST – Sciences", fmp: "FMP – Médecine",
+      fasch: "FASCH – Sc. Humaines", fgc: "FGC – Génie Civil",
+      fa: "FA – Architecture", famv: "FAMV – Agronomie",
+    };
+    const fLabel = FACULTY_LABELS[facultyCode] ?? facultyCode.toUpperCase();
+    opts.push({
+      value:    `field:${facultyCode}` as AudienceValue,
+      label:    `Ma filière · ${fLabel}`,
+      sublabel: `Étudiants de ${fLabel} uniquement`,
+      icon: (sel) => (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+          <path d="M2 12l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+          <path d="M2 16l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+        </svg>
+      ),
+    });
+    if (year !== null) {
+      opts.push({
+        value:    `class:${facultyCode}.${year}` as AudienceValue,
+        label:    `Ma promotion · ${facultyCode.toUpperCase()} ${year}ᵉ année`,
+        sublabel: `Votre promotion uniquement`,
+        icon: (sel) => (
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
+            <circle cx="9" cy="7" r="4" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
+          </svg>
+        ),
+      });
+    }
+  }
+  return opts;
+}
+
+// ── Audience badge (shown on posts) ───────────────────────────
+
+function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnType<typeof useC> }) {
+  if (!audience || audience === "everyone") return null;
+  const isField = audience.startsWith("field:");
+  const label = isField
+    ? `Filière · ${audience.replace("field:", "").toUpperCase()}`
+    : (() => {
+        const part = audience.replace("class:", "");
+        const [code, yr] = part.split(".");
+        return `Promo · ${code.toUpperCase()} ${yr}`;
+      })();
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: 10, fontWeight: 600,
+      color: C.gold, background: `${C.gold}15`,
+      border: `1px solid ${C.gold}40`,
+      borderRadius: 99, padding: "1px 7px 1px 5px",
+    }}>
+      {isField ? (
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+          <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+          <path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+        </svg>
+      ) : (
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
+          <circle cx="9" cy="7" r="4" stroke={C.gold} strokeWidth="2.2"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
+        </svg>
+      )}
+      {label}
+    </span>
+  );
+}
+
+// ── RichText — renders body text with @mentions highlighted ──
+// knownHandles: Set of lowercase handle strings (without @) that exist
+// as real users derived from post authors visible in the feed.
+
+function RichText({ text, style, knownHandles }: {
+  text:         string;
+  style?:       React.CSSProperties;
+  knownHandles: Set<string>;
+}) {
+  const C = useC();
+  // Split on @word boundaries, keeping the delimiter
+  const parts = text.split(/(@[\w\u00C0-\u024F]+)/g);
+  return (
+    <span style={style}>
+      {parts.map((part, i) => {
+        if (part.startsWith("@")) {
+          const handle = part.slice(1).toLowerCase();
+          const isReal = knownHandles.has(handle);
+          return (
+            <span key={i} style={{ color: isReal ? C.blue : "inherit", fontWeight: isReal ? 600 : "inherit" }}>
+              {part}
+            </span>
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </span>
+  );
+}
+
 // ── StickerPicker ─────────────────────────────────────────────
 
 function StickerPicker({ onPick, onClose }: { onPick: (s: string) => void; onClose: () => void }) {
@@ -626,6 +841,154 @@ function RepostSheet({ post, me, profilePic, isReposted, onClose, onSimpleRepost
   );
 }
 
+// ── PostMenuSheet — bottom sheet for ··· menu ────────────────
+// Same slide-up pattern as RepostSheet.
+// Shows: Connect (non-own posts) · Share · Delete or Hide
+
+function PostMenuSheet({ post, isMine, userId, onClose, onShare, onDelete, onHide }: {
+  post:     Post;
+  isMine:   boolean;
+  userId:   string;
+  onClose:  () => void;
+  onShare:  () => void;
+  onDelete: () => void;
+  onHide:   () => void;
+}) {
+  const C = useC();
+
+  // ── Connect state (localStorage, per viewer per author) ──────
+  const connectKey = `civique_connected_${userId}`;
+  function loadConnected(): Set<string> {
+    try { return new Set(JSON.parse(localStorage.getItem(connectKey) ?? "[]")); }
+    catch { return new Set(); }
+  }
+  function saveConnected(s: Set<string>) {
+    try { localStorage.setItem(connectKey, JSON.stringify([...s])); } catch {}
+  }
+
+  const [connected, setConnected] = useState(() => loadConnected().has(post.author.id));
+
+  const toggleConnect = () => {
+    const s = loadConnected();
+    if (connected) { s.delete(post.author.id); } else { s.add(post.author.id); }
+    saveConnected(s);
+    setConnected(!connected);
+  };
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 220 }} />
+      {/* Sheet */}
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0,
+        background: C.surface, borderRadius: "20px 20px 0 0",
+        zIndex: 221, padding: "0 0 40px",
+        boxShadow: "0 -4px 24px rgba(0,0,0,.12)",
+        animation: "sheetUp .28s cubic-bezier(.2,.8,.3,1) both",
+      }}>
+        {/* Drag handle */}
+        <div style={{ width: 36, height: 4, background: C.border2, borderRadius: 99, margin: "12px auto 20px" }} />
+
+        {/* Connect — only for other people's posts */}
+        {!isMine && (
+          <>
+            <button onClick={() => { toggleConnect(); onClose(); }} style={{
+              display: "flex", alignItems: "center", gap: 14,
+              width: "100%", padding: "14px 24px",
+              background: "none", border: "none", cursor: "pointer",
+              fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
+            }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                {connected ? (
+                  <>
+                    <path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3z" stroke={C.gold} strokeWidth="1.8" strokeLinecap="round"/>
+                    <path d="M2 21v-1a4 4 0 0 1 4-4h4" stroke={C.gold} strokeWidth="1.8" strokeLinecap="round"/>
+                    <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" stroke={C.gold} strokeWidth="1.8" strokeLinecap="round"/>
+                    <path d="M19 16l-2 2 1 1 3-3" stroke={C.gold} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  </>
+                ) : (
+                  <>
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke={C.text} strokeWidth="1.8" strokeLinecap="round"/>
+                    <circle cx="12" cy="7" r="4" stroke={C.text} strokeWidth="1.8"/>
+                    <path d="M19 8v6M16 11h6" stroke={C.text} strokeWidth="1.8" strokeLinecap="round"/>
+                  </>
+                )}
+              </svg>
+              <div style={{ textAlign: "left" }}>
+                <div style={{ fontSize: 16, fontWeight: 600, color: connected ? C.gold : C.text }}>
+                  {connected ? `Connecté à ${post.author.name.split(" ")[0]}` : `Se connecter à ${post.author.name.split(" ")[0]}`}
+                </div>
+                <div style={{ fontSize: 12, color: C.sub, marginTop: 1 }}>
+                  {connected ? "Annuler la connexion" : "Suivre les publications de cet utilisateur"}
+                </div>
+              </div>
+            </button>
+            <div style={{ height: 1, background: C.border, margin: "0 24px" }} />
+          </>
+        )}
+
+        {/* Share on WhatsApp */}
+        <button onClick={() => { onShare(); onClose(); }} style={{
+          display: "flex", alignItems: "center", gap: 14,
+          width: "100%", padding: "14px 24px",
+          background: "none", border: "none", cursor: "pointer",
+          fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
+        }}>
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+            <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.613 1.832 6.511L4 29l7.697-1.813A11.94 11.94 0 0 0 16 28c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="#25D366"/>
+            <path d="M21.5 18.5c-.3-.15-1.77-.87-2.04-.97-.28-.1-.48-.15-.68.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.27-.47-2.41-1.49-.89-.79-1.49-1.77-1.67-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.68-1.64-.93-2.24-.24-.59-.49-.51-.68-.52-.17-.01-.37-.01-.57-.01-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49s1.07 2.89 1.22 3.09c.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.71.23 1.36.2 1.87.12.57-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.19-.57-.34z" fill="#fff"/>
+          </svg>
+          <div style={{ textAlign: "left" }}>
+            <div style={{ fontSize: 16, fontWeight: 600, color: C.text }}>Partager sur WhatsApp</div>
+            <div style={{ fontSize: 12, color: C.sub, marginTop: 1 }}>Envoyer ce post via WhatsApp</div>
+          </div>
+        </button>
+
+        <div style={{ height: 1, background: C.border, margin: "0 24px" }} />
+
+        {/* Delete (own) or Hide (others) */}
+        {isMine ? (
+          <button onClick={() => { onDelete(); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 14,
+            width: "100%", padding: "14px 24px",
+            background: "none", border: "none", cursor: "pointer",
+            fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
+          }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <polyline points="3 6 5 6 21 6" stroke="#E8412A" strokeWidth="1.7" strokeLinecap="round"/>
+              <path d="M19 6l-1 14H6L5 6" stroke="#E8412A" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M10 11v6M14 11v6" stroke="#E8412A" strokeWidth="1.7" strokeLinecap="round"/>
+              <path d="M9 6V4h6v2" stroke="#E8412A" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <div style={{ textAlign: "left" }}>
+              <div style={{ fontSize: 16, fontWeight: 600, color: "#E8412A" }}>Supprimer</div>
+              <div style={{ fontSize: 12, color: C.sub, marginTop: 1 }}>Retirer définitivement ce post du fil</div>
+            </div>
+          </button>
+        ) : (
+          <button onClick={() => { onHide(); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 14,
+            width: "100%", padding: "14px 24px",
+            background: "none", border: "none", cursor: "pointer",
+            fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
+          }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" stroke={C.text} strokeWidth="1.7" strokeLinecap="round"/>
+              <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" stroke={C.text} strokeWidth="1.7" strokeLinecap="round"/>
+              <line x1="1" y1="1" x2="23" y2="23" stroke={C.text} strokeWidth="1.7" strokeLinecap="round"/>
+            </svg>
+            <div style={{ textAlign: "left" }}>
+              <div style={{ fontSize: 16, fontWeight: 600, color: C.text }}>Ne plus voir ce post</div>
+              <div style={{ fontSize: 12, color: C.sub, marginTop: 1 }}>Masquer ce contenu de votre fil</div>
+            </div>
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 // ── ImgGrid — responsive 1/2/3/4 images ──────────────────────
 
 function ImgGrid({ imgs, onRemove }: { imgs: string[]; onRemove?: (i: number) => void }) {
@@ -792,7 +1155,7 @@ function ReplyScreen({ post, onClose, onSubmit, me = { id: "", name: "Moi", hand
 
 // ── PostDetailScreen ──────────────────────────────────────────
 
-function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, profilePic = null, photoCache = {}, userId = "", autoOpenReply = false }: {
+function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, profilePic = null, photoCache = {}, userId = "", autoOpenReply = false, knownHandles = new Set<string>() }: {
   post:           Post;
   onClose:        () => void;
   onComment:      (text: string, imgs?: string[]) => void;
@@ -802,7 +1165,8 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
   profilePic?:    string | null;
   photoCache?:    Record<string, string>;
   userId?:        string;
-  autoOpenReply?: boolean;  // ← NEW: open ReplyScreen immediately on mount
+  autoOpenReply?: boolean;
+  knownHandles?:  Set<string>;
 }) {
   const C = useC();
   const { profilePic: ctxPic, user: ctxUser } = useProfile();
@@ -844,11 +1208,43 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
     return unsub;
   }, [post.id, userId]);
 
-  // Merge locally-added comments with DB-loaded (dedup by id), sorted oldest→newest
-  const allComments = [
+  // ── Comment ranking algorithm ─────────────────────────────────
+  // Real-world ranking inspired by Reddit/YouTube:
+  //
+  //   Score = (likes×3 - dislikes×1.5 + freshness_bonus) / age^0.6
+  //
+  //   freshness_bonus: comments under 10 min get +5 so brand-new replies
+  //   surface near the top and don't get buried by old liked comments.
+  //
+  //   The post author's own comment is always pinned to position 0
+  //   (like YouTube "creator pinned"), regardless of score.
+  //
+  //   Among ties (score within 5%), chronological order is used as
+  //   a tiebreaker so the thread feels natural when engagement is low.
+  //
+  function rankComments(list: Comment[]): Comment[] {
+    if (list.length === 0) return [];
+    const pinned = list.filter(c => c.author.id === post.author.id);
+    const rest   = list.filter(c => c.author.id !== post.author.id);
+    const score  = (c: Comment): number => {
+      const ageHours = Math.max(0.05, (Date.now() - new Date(c.createdAt).getTime()) / 3_600_000);
+      const fresh    = ageHours < (10 / 60) ? 5 : 0;
+      const raw      = c.likes * 3 - c.dislikes * 1.5 + fresh;
+      return raw / Math.pow(ageHours, 0.6);
+    };
+    const sorted = [...rest].sort((a, b) => {
+      const diff = score(b) - score(a);
+      if (Math.abs(diff) < 0.05) return a.createdAt < b.createdAt ? -1 : 1;
+      return diff;
+    });
+    const pinnedSorted = [...pinned].sort((a, b) => a.createdAt < b.createdAt ? -1 : 1);
+    return [...pinnedSorted, ...sorted];
+  }
+
+  const allComments = rankComments([
     ...comments,
     ...post.comments.filter(c => !comments.find(d => d.id === c.id)),
-  ].sort((a, b) => a.createdAt < b.createdAt ? -1 : 1);
+  ]);
 
   const toggleCommentLike = (cid: string) => {
     setComments(prev => prev.map(c => {
@@ -899,7 +1295,9 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
                 <div style={{ fontSize: 12, color: C.sub }}>{post.author.tag}</div>
               </div>
             </div>
-            <div style={{ fontSize: 17, color: C.text, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{post.body}</div>
+            <div style={{ fontSize: 17, color: C.text, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              <RichText text={post.body} knownHandles={knownHandles} />
+            </div>
             {post.imgs.length > 0 && <ImgGrid imgs={post.imgs} />}
             <div style={{ fontSize: 13, color: C.dim, marginTop: 12, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
               {fmtTime(post.createdAt)} · <span style={{ color: C.text, fontWeight: 600 }}>{fmtNum(post.views)}</span> vues
@@ -938,7 +1336,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
                   <span style={{ fontSize: 12, color: C.dim }}>· {fmtTime(c.createdAt)}</span>
                 </div>
                 <div style={{ fontSize: 11, color: C.sub, marginBottom: 4 }}>{c.author.tag}</div>
-                <div style={{ fontSize: 14, color: C.text, lineHeight: 1.5 }}>{c.body}</div>
+                <div style={{ fontSize: 14, color: C.text, lineHeight: 1.5 }}><RichText text={c.body} knownHandles={knownHandles} /></div>
                 {c.imgs.length > 0 && <ImgGrid imgs={c.imgs} />}
                 <div style={{ display: "flex", gap: 20, marginTop: 10, alignItems: "center" }}>
                   <button onClick={() => setShowReply(true)} style={actionBtn}>
@@ -974,7 +1372,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
 
 // ── PostCard ──────────────────────────────────────────────────
 
-function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView, me, profilePic = null, photoCache = {}, userId = "" }: {
+function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView, me, profilePic = null, photoCache = {}, userId = "", knownHandles = new Set<string>() }: {
   post:        Post;
   onLike:      () => void;
   onRepost:    (kind?: "simple" | "quote", quoteText?: string, quoteImgs?: string[]) => void;
@@ -986,6 +1384,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
   profilePic?: string | null;
   photoCache?: Record<string, string>;
   userId?:     string;
+  knownHandles?: Set<string>;
 }) {
   const C = useC();
   const { profilePic: ctxPic, user: ctxUser } = useProfile();
@@ -996,7 +1395,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
   const [showDetail,          setShowDetail]          = useState(false);
   const [showDetailWithReply, setShowDetailWithReply] = useState(false);
   const [showRepostSheet,     setShowRepostSheet]     = useState(false);
-  const [showMenu,            setShowMenu]            = useState(false);
+  const [showMenuSheet,       setShowMenuSheet]       = useState(false);
   const [showQuotedDetail,    setShowQuotedDetail]    = useState(false);
   const [likeAnimKey,         setLikeAnimKey]         = useState(0);
   const [likeAnimActive,      setLikeAnimActive]      = useState(false);
@@ -1041,6 +1440,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
     createdAt: new Date(0).toISOString(),
     likes: 0, liked: false, reposts: 0, reposted: false,
     views: 0, commentCount: 0, comments: [], showComments: false,
+    audience: "everyone",
   } : null;
 
   return (
@@ -1054,10 +1454,6 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
         80%  { transform: scale(1.1); }
         100% { transform: scale(1); }
       }
-      @keyframes menuFadeIn {
-        from { opacity: 0; transform: scale(0.92) translateY(-4px); }
-        to   { opacity: 1; transform: scale(1) translateY(0); }
-      }
     `}</style>
     <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 10px", cursor: "pointer" }} onClick={() => { setShowDetail(true); onView(); }}>
       <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -1070,41 +1466,20 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
                 {post.author.badge && <VerifiedBadge type={post.author.badge} size={15} />}
                 <span style={{ fontSize: 12, color: C.dim }}>· {fmtTime(post.createdAt)}</span>
               </div>
-              <div style={{ fontSize: 11, color: C.sub, marginTop: 1 }}>{post.author.tag}</div>
+              <div style={{ fontSize: 11, color: C.sub, marginTop: 1, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
+                {post.author.tag}
+                <AudienceBadge audience={post.audience} C={C} />
+              </div>
             </div>
-            {/* ··· menu — always visible, owner: delete | non-owner: hide */}
-            <div style={{ position: "relative", flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-              <button onClick={e => { e.stopPropagation(); setShowMenu(v => !v); }}
+            {/* ··· menu — opens PostMenuSheet */}
+            <div style={{ flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+              <button onClick={e => { e.stopPropagation(); setShowMenuSheet(true); }}
                 style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, padding: "0 4px 0 8px", fontSize: 18, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>···</button>
-              {showMenu && (
-                <>
-                  <div onClick={() => setShowMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 300 }} />
-                  <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, zIndex: 301, minWidth: 190, boxShadow: "0 8px 32px rgba(0,0,0,.18)", overflow: "hidden", animation: "menuFadeIn .15s ease both" }}>
-                    {/* Share to WhatsApp */}
-                    <button onClick={handleShare} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--f-sans)", fontSize: 15, color: C.text, WebkitTapHighlightColor: "transparent", borderBottom: `1px solid ${C.border}` }}>
-                      <svg width="19" height="19" viewBox="0 0 32 32" fill="none">
-                        <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.613 1.832 6.511L4 29l7.697-1.813A11.94 11.94 0 0 0 16 28c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="#25D366"/>
-                        <path d="M21.5 18.5c-.3-.15-1.77-.87-2.04-.97-.28-.1-.48-.15-.68.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.27-.47-2.41-1.49-.89-.79-1.49-1.77-1.67-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.68-1.64-.93-2.24-.24-.59-.49-.51-.68-.52-.17-.01-.37-.01-.57-.01-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49s1.07 2.89 1.22 3.09c.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.71.23 1.36.2 1.87.12.57-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.19-.57-.34z" fill="#fff"/>
-                      </svg>
-                      Partager sur WhatsApp
-                    </button>
-                    {isMine ? (
-                      <button onClick={e => { e.stopPropagation(); setShowMenu(false); onDelete(); }} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--f-sans)", fontSize: 15, color: "#E8412A", WebkitTapHighlightColor: "transparent" }}>
-                        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M9 6V4h6v2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        Supprimer
-                      </button>
-                    ) : (
-                      <button onClick={e => { e.stopPropagation(); setShowMenu(false); onHide(); }} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--f-sans)", fontSize: 15, color: C.text, WebkitTapHighlightColor: "transparent" }}>
-                        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
-                        Ne plus voir ce post
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
             </div>
           </div>
-          <div style={{ fontSize: 15, color: C.text, lineHeight: 1.55, marginTop: 8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{bodyText}</div>
+          <div style={{ fontSize: 15, color: C.text, lineHeight: 1.55, marginTop: 8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            <RichText text={bodyText} knownHandles={knownHandles} />
+          </div>
           {isLong && (
             <button onClick={e => { e.stopPropagation(); setExpanded(x => !x); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.blue, fontSize: 14, fontWeight: 600, padding: "2px 0", fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent" }}>
               {expanded ? "Voir moins" : "Voir plus"}
@@ -1158,6 +1533,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
         photoCache={photoCache}
         userId={userId}
         autoOpenReply={showDetailWithReply}
+        knownHandles={knownHandles}
         onClose={() => { setShowDetail(false); setShowDetailWithReply(false); }}
         onComment={(text, imgs) => onComment(text, imgs)}
         onLike={onLike}
@@ -1169,6 +1545,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
       <PostDetailScreen
         post={quotedAsPost} me={me} profilePic={profilePic}
         photoCache={photoCache} userId={userId} autoOpenReply={false}
+        knownHandles={knownHandles}
         onClose={() => setShowQuotedDetail(false)}
         onComment={() => {}} onLike={() => {}} onRepost={() => {}}
       />
@@ -1183,6 +1560,18 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
         onClose={() => setShowRepostSheet(false)}
         onSimpleRepost={onRepost}
         onQuotePost={(text, imgs) => onRepost("quote", text, imgs)}
+      />
+    )}
+    {/* PostMenuSheet — ··· bottom sheet */}
+    {showMenuSheet && (
+      <PostMenuSheet
+        post={post}
+        isMine={isMine}
+        userId={userId}
+        onClose={() => setShowMenuSheet(false)}
+        onShare={handleShare}
+        onDelete={onDelete}
+        onHide={onHide}
       />
     )}
     </>
@@ -1324,13 +1713,16 @@ function InlineCompose({ me, profilePic = null, onPost }: {
   );
 }
 
-function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "" }: { onClose: () => void; onPost: (text: string, imgs?: string[]) => void; me: Author; profilePic?: string | null; initialText?: string }) {
+function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "" }: { onClose: () => void; onPost: (text: string, imgs?: string[], audience?: AudienceValue) => void; me: Author; profilePic?: string | null; initialText?: string }) {
   const C = useC();
   const { profilePic: ctxPic } = useProfile();
   const livePic = ctxPic ?? profilePic;
   const [text, setText]               = useState(initialText);
   const [imgs, setImgs]               = useState<string[]>([]);
   const [showStickers, setShowStickers] = useState(false);
+  const [audience, setAudience]       = useState<AudienceValue>("everyone");
+  const [showAudience, setShowAudience] = useState(false);
+  const audienceOptions               = buildAudienceOptions(me);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const imgRef  = useRef<HTMLInputElement>(null);
   const gifRef  = useRef<HTMLInputElement>(null);
@@ -1360,9 +1752,17 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
 
   return (
     <div style={{ position: "fixed", inset: 0, background: C.bg, zIndex: 200, display: "flex", flexDirection: "column" }}>
+      {showAudience && (
+        <AudienceSheet
+          current={audience}
+          options={audienceOptions}
+          onPick={setAudience}
+          onClose={() => setShowAudience(false)}
+        />
+      )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, background: C.surface }}>
         <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.text, fontSize: 22, padding: 0, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>←</button>
-        <button onClick={() => { if (canPost) { onPost(text.trim(), imgs.length > 0 ? imgs : undefined); } }} disabled={!canPost} style={{ background: canPost ? C.gold : C.border2, border: "none", borderRadius: 999, padding: "8px 24px", fontSize: 15, fontWeight: 700, color: canPost ? "#fff" : C.dim, cursor: canPost ? "pointer" : "not-allowed", fontFamily: "var(--f-sans)", transition: "background .15s" }}>Publier</button>
+        <button onClick={() => { if (canPost) { onPost(text.trim(), imgs.length > 0 ? imgs : undefined, audience); } }} disabled={!canPost} style={{ background: canPost ? C.gold : C.border2, border: "none", borderRadius: 999, padding: "8px 24px", fontSize: 15, fontWeight: 700, color: canPost ? "#fff" : C.dim, cursor: canPost ? "pointer" : "not-allowed", fontFamily: "var(--f-sans)", transition: "background .15s" }}>Publier</button>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 24px" }}>
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
@@ -1378,6 +1778,34 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
               {(me.badge === "gold" || me.badge === "gray") && (
                 <span style={{ fontSize: 10, color: C.gold, fontWeight: 600 }}>· {MAX} car. · {MAX_IMGS} img</span>
               )}
+            </div>
+            {/* Audience pill — tappable */}
+            <div style={{ padding: "6px 14px 0" }}>
+              <button onClick={() => setShowAudience(true)} style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                background: `${C.gold}18`, border: `1px solid ${C.gold}55`,
+                borderRadius: 99, padding: "3px 10px 3px 8px",
+                cursor: "pointer", fontFamily: "var(--f-sans)",
+                WebkitTapHighlightColor: "transparent",
+              }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  {audience === "everyone"
+                    ? <><circle cx="12" cy="12" r="9" stroke={C.gold} strokeWidth="2"/><path d="M12 3c0 0-4 4-4 9s4 9 4 9M12 3c0 0 4 4 4 9s-4 9-4 9" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/><path d="M3 12h18" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/></>
+                    : audience.startsWith("field:")
+                    ? <><path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/><path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/></>
+                    : <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/><circle cx="9" cy="7" r="4" stroke={C.gold} strokeWidth="2"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/></>
+                  }
+                </svg>
+                <span style={{ fontSize: 11, fontWeight: 600, color: C.gold }}>
+                  {(() => {
+                    const opt = audienceOptions.find(o => o.value === audience);
+                    return opt ? opt.label : "Tout le monde";
+                  })()}
+                </span>
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M2 4l3 3 3-3" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
             </div>
             <textarea ref={textRef} value={text} onChange={e => { if (e.target.value.length <= MAX) setText(e.target.value); }} placeholder="Quoi de neuf dans vos projets ?"
               style={{ width: "100%", border: "none", padding: "8px 14px 10px", fontSize: 16, lineHeight: 1.65, color: C.text, background: "transparent", outline: "none", resize: "none", fontFamily: "var(--f-sans)", minHeight: 230, overflowY: "hidden" }} />
@@ -1461,6 +1889,9 @@ function postToDb(p: Post): DBPost {
   if (p.quotedPost) {
     row.quoted_post = JSON.stringify(p.quotedPost);
   }
+  if (p.audience && p.audience !== "everyone") {
+    (row as any).audience = p.audience;
+  }
   return row as DBPost;
 }
 
@@ -1485,6 +1916,7 @@ function dbToPost(row: DBPost & { quoted_post?: string }, likedSet?: Set<string>
     comments:     [],
     showComments: false,
     quotedPost,
+    audience:     ((row as any).audience as Post["audience"]) ?? "everyone",
   };
 }
 
@@ -1548,38 +1980,159 @@ function buildAuthorTag(u: UserProfile): string {
   return role ? `${base} · ${role}` : base;
 }
 
-export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setTab: (t: "all"|"mine") => void; user?: import("./AuthFlow").UserProfile | null }) {
-  const C = useC();
-  const { user: ctxUser } = useProfile();
-  // Use both sources — ctxUser updates after UserSync, user prop may arrive first
-  const myId = ctxUser?.id ?? user?.id ?? "";
-  const [showMessages, setShowMessages] = useState(false);
-  const [unread, setUnread] = useState(0);
+// ── NotifPanel — slide-down notification centre ───────────────
 
-  useEffect(() => {
-    if (!myId) return;
-    const refresh = () =>
-      loadConversations(myId).then(rows => {
-        setUnread(rows.reduce((s, r) => s + (r.user_a === myId ? r.unread_a : r.unread_b), 0));
-      });
-    refresh();
-    const unsub = subscribeConversations(myId, refresh);
-    return unsub;
-  }, [myId]); // re-runs whenever myId resolves from "" to the real id
+interface LocalNotif { id: string; body: string; from: string; createdAt: string; }
+
+function NotifPanel({ userId, onClose }: { userId: string; onClose: () => void }) {
+  const C = useC();
+  const key = `civique_notifs_${userId}`;
+
+  const [notifs, setNotifs] = useState<LocalNotif[]>(() => {
+    try { return JSON.parse(localStorage.getItem(key) ?? "[]"); } catch { return []; }
+  });
+
+  const clearAll = () => {
+    try { localStorage.setItem(key, "[]"); } catch {}
+    setNotifs([]);
+  };
+
+  const dismiss = (id: string) => {
+    const next = notifs.filter(n => n.id !== id);
+    try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+    setNotifs(next);
+  };
 
   return (
     <>
-      {showMessages && <MessagesScreen onClose={() => setShowMessages(false)} />}
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px 0" }}>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 20, color: C.text, letterSpacing: "-.3px" }}>Réseau étudiant</div>
-            <div style={{ fontSize: 11, color: C.sub, marginTop: 1, marginBottom: 8 }}>Trouvez vos partenaires, co-fondateurs, collaborateurs</div>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 310, background: "rgba(0,0,0,.35)" }} />
+
+      {/* Panel */}
+      <div style={{
+        position: "fixed", top: 0, right: 0, bottom: 0, width: "min(340px, 92vw)",
+        background: C.surface, zIndex: 311,
+        boxShadow: "-6px 0 32px rgba(0,0,0,.18)",
+        display: "flex", flexDirection: "column",
+        animation: "slideInRight .22s cubic-bezier(.2,.8,.3,1) both",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.gold} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.gold} strokeWidth="1.9" strokeLinecap="round"/>
+            </svg>
+            <span style={{ fontWeight: 700, fontSize: 17, color: C.text }}>Notifications</span>
           </div>
-          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            <div onClick={() => setShowMessages(true)}><DMIcon count={unread} /></div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            {notifs.length > 0 && (
+              <button onClick={clearAll} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.sub, fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent" }}>
+                Tout effacer
+              </button>
+            )}
+            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, fontSize: 20, lineHeight: 1, padding: 2, WebkitTapHighlightColor: "transparent" }}>✕</button>
+          </div>
+        </div>
+
+        {/* List */}
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {notifs.length === 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 12, color: C.dim }}>
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.3 }}>
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
+              <span style={{ fontSize: 14 }}>Aucune notification</span>
+            </div>
+          ) : notifs.map(n => (
+            <div key={n.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 18px", borderBottom: `1px solid ${C.border}`, background: C.surface }}>
+              {/* Bell icon accent */}
+              <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.gold + "22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, color: C.text, lineHeight: 1.45 }}>{n.body}</div>
+                <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{fmtTime(n.createdAt)}</div>
+              </div>
+              <button onClick={() => dismiss(n.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, fontSize: 15, padding: "0 2px", flexShrink: 0, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>✕</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes slideInRight {
+          from { transform: translateX(100%); opacity: 0; }
+          to   { transform: translateX(0);    opacity: 1; }
+        }
+      `}</style>
+    </>
+  );
+}
+
+// ── NotifBell — icon button with unread badge ─────────────────
+
+function NotifBell({ userId, onClick }: { userId: string; onClick: () => void }) {
+  const C = useC();
+  const key = `civique_notifs_${userId}`;
+
+  // Poll localStorage every 5 s so the badge stays fresh
+  const [count, setCount] = useState(() => {
+    try { return (JSON.parse(localStorage.getItem(key) ?? "[]") as LocalNotif[]).length; } catch { return 0; }
+  });
+
+  useEffect(() => {
+    const refresh = () => {
+      try { setCount((JSON.parse(localStorage.getItem(key) ?? "[]") as LocalNotif[]).length); } catch {}
+    };
+    const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
+  }, [key]);
+
+  return (
+    <div style={{ position: "relative", flexShrink: 0 }}>
+      <button onClick={onClick} style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: C.sub, WebkitTapHighlightColor: "transparent" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+        </svg>
+      </button>
+      {count > 0 && (
+        <div style={{ position: "absolute", top: 0, right: 0, width: 16, height: 16, borderRadius: "50%", background: "#E8412A", color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--f-mono)", pointerEvents: "none" }}>
+          {count > 9 ? "9+" : count}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── CommunityHeader ───────────────────────────────────────────
+
+export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setTab: (t: "all"|"mine") => void; user?: import("./AuthFlow").UserProfile | null }) {
+  const C = useC();
+  const { user: ctxUser } = useProfile();
+  const myId = ctxUser?.id ?? user?.id ?? "";
+  const [showNotifs, setShowNotifs] = useState(false);
+
+  return (
+    <>
+      {showNotifs && <NotifPanel userId={myId} onClose={() => setShowNotifs(false)} />}
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+        {/* Row 1 — Logo centred, icons pinned right */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "10px 16px 6px", position: "relative" }}>
+          <img src="/civic.svg" alt="Civic" style={{ height: 35, objectFit: "contain", display: "block" }} />
+          <div style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 4, alignItems: "center" }}>
+            <NotifBell userId={myId} onClick={() => setShowNotifs(v => !v)} />
             <AppMenu user={user} />
           </div>
+        </div>
+        {/* Row 2 — subtitle */}
+        <div style={{ padding: "6px 16px 10px", textAlign: "left" }}>
+          <div style={{ fontSize: 11, color: C.sub }}>Trouvez vos partenaires, co-fondateurs, collaborateurs</div>
         </div>
         <div style={{ display: "flex" }}>
           {([["all", "Tous les posts"], ["mine", "Mes posts"]] as const).map(([id, label]) => (
@@ -1738,8 +2291,29 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
 
   // ── Apply ranking algorithm on "all" tab; "mine" stays chronological
   const { faculty: vFaculty, year: vYear } = viewerCtx(currentUser);
+
+  // ── Audience gate: hide posts restricted to a field/class the viewer isn't in
+  function passesAudienceGate(p: Post): boolean {
+    const aud = p.audience ?? "everyone";
+    if (aud === "everyone") return true;
+    // Author's own post always visible to themselves
+    if (p.author.id === ME_LIVE.id) return true;
+    if (aud.startsWith("field:")) {
+      const requiredCode = aud.replace("field:", "");
+      const { facultyCode: vCode } = parseTag(ME_LIVE.tag);
+      return vCode === requiredCode;
+    }
+    if (aud.startsWith("class:")) {
+      const required = aud.replace("class:", ""); // e.g. "eco.3"
+      const { facultyCode: vCode, year: vYearTag } = parseTag(ME_LIVE.tag);
+      const [rCode, rYr] = required.split(".");
+      return vCode === rCode && vYearTag !== null && String(vYearTag) === rYr;
+    }
+    return true;
+  }
+
   const feed = (() => {
-    const visible = posts.filter(p => !hiddenPostIds.has(p.id));
+    const visible = posts.filter(p => !hiddenPostIds.has(p.id) && passesAudienceGate(p));
     if (feedTab !== "all") return visible.filter(p => p.author.id === ME_LIVE.id);
     const posts_for_rank = visible;
 
@@ -1762,7 +2336,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     return ranked;
   })();
 
-  const addPost = (text: string, imgs?: string[]) => {
+  const addPost = (text: string, imgs?: string[], audience: AudienceValue = "everyone") => {
     const now = new Date().toISOString();
     const newPost: Post = {
       id: `p${Date.now()}_${nextId.current++}`,
@@ -1770,6 +2344,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
       createdAt: now, likes: 0, liked: false,
       reposts: 0, reposted: false, views: 1,
       commentCount: 0, comments: [], showComments: false,
+      audience,
     };
     setPosts(prev => [newPost, ...prev]);
     insertPost(postToDb(newPost));
@@ -1893,9 +2468,23 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     dbDeletePost(id);
   };
 
+  // ── Known handles: built from all loaded post authors so @mentions can be resolved
+  const knownHandles = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of posts) {
+      // normalise: "Jean Dupont" → "jeandupont", stored without @
+      const h = p.author.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "");
+      if (h) s.add(h);
+      // also add from the handle field itself (strip leading @, lowercase)
+      const raw = p.author.handle.replace(/^@/, "").toLowerCase();
+      if (raw) s.add(raw);
+    }
+    return s;
+  }, [posts]);
+
   return (
     <>
-    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs) => { addPost(text, imgs); setShowCompose(false); setComposeDraft(""); }} />}
+    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience) => { addPost(text, imgs, audience); setShowCompose(false); setComposeDraft(""); }} />}
     <div onScroll={handleScroll} style={{ background: C.bg, minHeight: "100%", overflowY: "auto", height: "100%" }}>
 
       {/* InlineCompose intentionally removed — use the FAB (+ button) to compose */}
@@ -1916,6 +2505,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
           onView={() => incrementPostViews(post.id)}
           photoCache={photoCache}
           userId={uid}
+          knownHandles={knownHandles}
         />
       ))}
       <div style={{ height: 80 }} />
