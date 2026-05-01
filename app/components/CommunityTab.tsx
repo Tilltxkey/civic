@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import ReactDOM from "react-dom";
 import type { UserProfile } from "./AuthFlow";
-import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushLocalNotif, type DBPost, type DBComment } from "./db";
+import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushNotif, loadNotifs, deleteNotif, clearAllNotifs, subscribeNotifs, type DBPost, type DBComment, type DBNotif } from "./db";
 import { MessagesScreen } from "./MessagesTab";
 import { useC } from "./tokens";
 import { useLang } from "./LangContext";
@@ -57,7 +58,7 @@ interface Post {
   comments:     Comment[];
   showComments: boolean;
   quotedPost?:  QuotedPost;  // set when this post is a "Citer" quote-repost
-  audience:     "everyone" | `field:${string}` | `class:${string}`;
+  audience:     "everyone" | `field:${string}` | `subfield:${string}` | `class:${string}`;
 }
 
 function maxChars(badge: Author["badge"]): number {
@@ -413,7 +414,7 @@ function VerifiedBadge({ type, size = 15 }: { type: "gold" | "blue" | "gray"; si
 
 // ── AudienceSheet — bottom sheet for post visibility ─────────
 
-type AudienceValue = "everyone" | `field:${string}` | `class:${string}`;
+type AudienceValue = "everyone" | `field:${string}` | `subfield:${string}` | `class:${string}`;
 
 interface AudienceOption {
   value: AudienceValue;
@@ -503,7 +504,7 @@ function AudienceSheet({ current, options, onPick, onClose }: {
 
 // ── Build audience options from author tag ────────────────────
 
-function buildAudienceOptions(me: Author): AudienceOption[] {
+function buildAudienceOptions(me: Author, userField?: string): AudienceOption[] {
   const { facultyCode, year } = parseTag(me.tag);
   const opts: AudienceOption[] = [
     {
@@ -527,6 +528,8 @@ function buildAudienceOptions(me: Author): AudienceOption[] {
       fa: "FA – Architecture", famv: "FAMV – Agronomie",
     };
     const fLabel = FACULTY_LABELS[facultyCode] ?? facultyCode.toUpperCase();
+
+    // ── Option 2: full faculty ─────────────────────────────────
     opts.push({
       value:    `field:${facultyCode}` as AudienceValue,
       label:    `Ma filière · ${fLabel}`,
@@ -539,6 +542,27 @@ function buildAudienceOptions(me: Author): AudienceOption[] {
         </svg>
       ),
     });
+
+    // ── Option 3: sub-field / parcours (e.g. "Jurisprudence", "Sciences Éco") ──
+    if (userField && userField.trim()) {
+      const subfieldKey = userField.trim().toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[\s/\-]+/g, "_");
+      opts.push({
+        value:    `subfield:${subfieldKey}` as AudienceValue,
+        label:    `Mon parcours · ${userField.trim()}`,
+        sublabel: `Étudiants en ${userField.trim()} uniquement`,
+        icon: (sel) => (
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+            <path d="M9 7h7M9 11h5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        ),
+      });
+    }
+
+    // ── Option 4: year/class ───────────────────────────────────
     if (year !== null) {
       opts.push({
         value:    `class:${facultyCode}.${year}` as AudienceValue,
@@ -562,14 +586,45 @@ function buildAudienceOptions(me: Author): AudienceOption[] {
 
 function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnType<typeof useC> }) {
   if (!audience || audience === "everyone") return null;
-  const isField = audience.startsWith("field:");
-  const label = isField
-    ? `Filière · ${audience.replace("field:", "").toUpperCase()}`
-    : (() => {
-        const part = audience.replace("class:", "");
-        const [code, yr] = part.split(".");
-        return `Promo · ${code.toUpperCase()} ${yr}`;
-      })();
+  const isField    = audience.startsWith("field:");
+  const isSubfield = audience.startsWith("subfield:");
+  const isClass    = audience.startsWith("class:");
+
+  let label = "";
+  let icon: React.ReactNode = null;
+
+  if (isField) {
+    label = `Filière · ${audience.replace("field:", "").toUpperCase()}`;
+    icon = (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+        <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+        <path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+      </svg>
+    );
+  } else if (isSubfield) {
+    // subfield key is normalised — display as-is capitalised
+    const raw = audience.replace("subfield:", "").replace(/_/g, " ");
+    const display = raw.charAt(0).toUpperCase() + raw.slice(1);
+    label = `Parcours · ${display}`;
+    icon = (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+      </svg>
+    );
+  } else if (isClass) {
+    const part = audience.replace("class:", "");
+    const [code, yr] = part.split(".");
+    label = `Promo · ${code.toUpperCase()} ${yr}ᵉ an`;
+    icon = (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
+        <circle cx="9" cy="7" r="4" stroke={C.gold} strokeWidth="2.2"/>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
+      </svg>
+    );
+  }
+
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 4,
@@ -578,19 +633,7 @@ function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnT
       border: `1px solid ${C.gold}40`,
       borderRadius: 99, padding: "1px 7px 1px 5px",
     }}>
-      {isField ? (
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
-          <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
-          <path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
-        </svg>
-      ) : (
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
-          <circle cx="9" cy="7" r="4" stroke={C.gold} strokeWidth="2.2"/>
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
-        </svg>
-      )}
-      {label}
+      {icon}{label}
     </span>
   );
 }
@@ -605,17 +648,21 @@ function RichText({ text, style, knownHandles }: {
   knownHandles: Set<string>;
 }) {
   const C = useC();
-  // Split on @word boundaries, keeping the delimiter
-  const parts = text.split(/(@[\w\u00C0-\u024F]+)/g);
+  // Split keeping @nom.prenom as a single token — dot is valid in handles
+  const parts = text.split(/(@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*)/g);
   return (
     <span style={style}>
       {parts.map((part, i) => {
         if (part.startsWith("@")) {
-          const handle = part.slice(1).toLowerCase();
+          // Strip trailing dots (e.g. end-of-sentence punctuation "@nom.")
+          const clean  = part.replace(/\.+$/, "");
+          const trail  = part.slice(clean.length);
+          const handle = clean.slice(1).toLowerCase();
           const isReal = knownHandles.has(handle);
           return (
-            <span key={i} style={{ color: isReal ? C.blue : "inherit", fontWeight: isReal ? 600 : "inherit" }}>
-              {part}
+            <span key={i}>
+              <span style={{ color: isReal ? C.blue : "inherit", fontWeight: isReal ? 600 : "inherit" }}>{clean}</span>
+              {trail}
             </span>
           );
         }
@@ -890,8 +937,8 @@ function PostMenuSheet({ post, isMine, userId, onClose, onShare, onDelete, onHid
         {/* Drag handle */}
         <div style={{ width: 36, height: 4, background: C.border2, borderRadius: 99, margin: "12px auto 20px" }} />
 
-        {/* Connect — only for other people's posts */}
-        {!isMine && (
+        {/* Connect — hidden for now, will implement later */}
+        {false && !isMine && (
           <>
             <button onClick={() => { toggleConnect(); onClose(); }} style={{
               display: "flex", alignItems: "center", gap: 14,
@@ -989,9 +1036,53 @@ function PostMenuSheet({ post, isMine, userId, onClose, onShare, onDelete, onHid
   );
 }
 
+// ── ImageViewer — fullscreen lightbox ────────────────────────
+
+function ImageViewer({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  if (typeof document === "undefined") return null;
+  return ReactDOM.createPortal(
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 500,
+      background: "rgba(0,0,0,.96)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      {/* Close button */}
+      <button onClick={onClose} style={{
+        position: "absolute", top: 16, right: 16,
+        background: "rgba(255,255,255,.12)", border: "none",
+        borderRadius: "50%", width: 38, height: 38,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        cursor: "pointer", color: "#fff", zIndex: 501,
+        WebkitTapHighlightColor: "transparent",
+      }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+          <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+        </svg>
+      </button>
+      {/* Image — contain so full image is visible, never cropped */}
+      <img
+        src={src} alt=""
+        onClick={e => e.stopPropagation()}
+        style={{
+          maxWidth: "100vw", maxHeight: "100vh",
+          objectFit: "contain", display: "block",
+          userSelect: "none", WebkitUserSelect: "none",
+        }}
+      />
+    </div>,
+    document.body
+  );
+}
+
 // ── ImgGrid — responsive 1/2/3/4 images ──────────────────────
 
-function ImgGrid({ imgs, onRemove }: { imgs: string[]; onRemove?: (i: number) => void }) {
+function ImgGrid({ imgs, onRemove, onImageClick }: { imgs: string[]; onRemove?: (i: number) => void; onImageClick?: (src: string) => void }) {
   if (!imgs.length) return null;
   const n = imgs.length;
   const isEmoji = (src: string) => !src.startsWith("data:") && !src.startsWith("http");
@@ -1010,7 +1101,8 @@ function ImgGrid({ imgs, onRemove }: { imgs: string[]; onRemove?: (i: number) =>
             gridRow: n === 3 && i === 0 ? "1 / 3" : undefined,
             aspectRatio: n === 1 ? undefined : "1",
             display: "flex", alignItems: "center", justifyContent: "center",
-          }}>
+            cursor: onImageClick && !emoji ? "pointer" : "default",
+          }} onClick={() => onImageClick && !emoji && onImageClick(src)}>
             {emoji ? (
               <div style={{ fontSize: 56, lineHeight: 1, padding: 8 }}>{src}</div>
             ) : (
@@ -1020,7 +1112,7 @@ function ImgGrid({ imgs, onRemove }: { imgs: string[]; onRemove?: (i: number) =>
               }} />
             )}
             {onRemove && (
-              <button onClick={() => onRemove(i)} style={{
+              <button onClick={e => { e.stopPropagation(); onRemove(i); }} style={{
                 position: "absolute", top: 6, right: 6,
                 background: "rgba(0,0,0,.65)", border: "none", borderRadius: "50%",
                 width: 26, height: 26, color: "#fff", fontSize: 13,
@@ -1177,6 +1269,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
   // ← CHANGED: initialise with autoOpenReply so the reply screen opens on mount when triggered from the comment icon
   const [showReply, setShowReply] = useState(autoOpenReply);
   const [toast, setToast]         = useState(false);
+  const [viewerSrc, setViewerSrc] = useState<string | null>(null);
   const [comments, setComments]   = useState<Comment[]>([]);
   const [commentPhotoCache, setCommentPhotoCache] = useState<Record<string, string>>(photoCache);
 
@@ -1278,6 +1371,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
 
   return (
     <>
+      {viewerSrc && <ImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />}
       <div style={{ position: "fixed", inset: 0, background: C.bg, zIndex: 125, display: "flex", flexDirection: "column", animation: "fadeup .18s ease both" }}>
         <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: C.text, padding: 4, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>←</button>
@@ -1298,7 +1392,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
             <div style={{ fontSize: 17, color: C.text, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
               <RichText text={post.body} knownHandles={knownHandles} />
             </div>
-            {post.imgs.length > 0 && <ImgGrid imgs={post.imgs} />}
+            {post.imgs.length > 0 && <ImgGrid imgs={post.imgs} onImageClick={src => setViewerSrc(src)} />}
             <div style={{ fontSize: 13, color: C.dim, marginTop: 12, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
               {fmtTime(post.createdAt)} · <span style={{ color: C.text, fontWeight: 600 }}>{fmtNum(post.views)}</span> vues
             </div>
@@ -1337,7 +1431,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
                 </div>
                 <div style={{ fontSize: 11, color: C.sub, marginBottom: 4 }}>{c.author.tag}</div>
                 <div style={{ fontSize: 14, color: C.text, lineHeight: 1.5 }}><RichText text={c.body} knownHandles={knownHandles} /></div>
-                {c.imgs.length > 0 && <ImgGrid imgs={c.imgs} />}
+                {c.imgs.length > 0 && <ImgGrid imgs={c.imgs} onImageClick={src => setViewerSrc(src)} />}
                 <div style={{ display: "flex", gap: 20, marginTop: 10, alignItems: "center" }}>
                   <button onClick={() => setShowReply(true)} style={actionBtn}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/></svg>
@@ -1550,8 +1644,8 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
         onComment={() => {}} onLike={() => {}} onRepost={() => {}}
       />
     )}
-    {/* RepostSheet — X-style Reposter / Citer sheet */}
-    {showRepostSheet && (
+    {/* RepostSheet — portal to escape scroll container stacking context */}
+    {showRepostSheet && typeof document !== "undefined" && ReactDOM.createPortal(
       <RepostSheet
         post={post}
         me={me}
@@ -1560,10 +1654,11 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
         onClose={() => setShowRepostSheet(false)}
         onSimpleRepost={onRepost}
         onQuotePost={(text, imgs) => onRepost("quote", text, imgs)}
-      />
+      />,
+      document.body
     )}
-    {/* PostMenuSheet — ··· bottom sheet */}
-    {showMenuSheet && (
+    {/* PostMenuSheet — ··· bottom sheet — rendered in a portal to escape scroll container */}
+    {showMenuSheet && typeof document !== "undefined" && ReactDOM.createPortal(
       <PostMenuSheet
         post={post}
         isMine={isMine}
@@ -1572,7 +1667,8 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
         onShare={handleShare}
         onDelete={onDelete}
         onHide={onHide}
-      />
+      />,
+      document.body
     )}
     </>
   );
@@ -1713,21 +1809,133 @@ function InlineCompose({ me, profilePic = null, onPost }: {
   );
 }
 
-function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "" }: { onClose: () => void; onPost: (text: string, imgs?: string[], audience?: AudienceValue) => void; me: Author; profilePic?: string | null; initialText?: string }) {
+function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "", userField = "" }: { onClose: () => void; onPost: (text: string, imgs?: string[], audience?: AudienceValue, knownIds?: Map<string, string>) => void; me: Author; profilePic?: string | null; initialText?: string; userField?: string }) {
   const C = useC();
-  const { profilePic: ctxPic } = useProfile();
+  const { profilePic: ctxPic, user: ctxUser } = useProfile();
   const livePic = ctxPic ?? profilePic;
   const [text, setText]               = useState(initialText);
   const [imgs, setImgs]               = useState<string[]>([]);
   const [showStickers, setShowStickers] = useState(false);
   const [audience, setAudience]       = useState<AudienceValue>("everyone");
   const [showAudience, setShowAudience] = useState(false);
-  const audienceOptions               = buildAudienceOptions(me);
+  const audienceOptions               = buildAudienceOptions(me, userField);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const imgRef  = useRef<HTMLInputElement>(null);
   const gifRef  = useRef<HTMLInputElement>(null);
   const MAX      = maxChars(me.badge);
   const MAX_IMGS = maxImgs(me.badge);
+
+  // ── @mention autocomplete ──────────────────────────────────
+  // allUsers: built from Supabase profiles. We derive it from ProfileContext
+  // or fall back to empty — works fine once posts exist.
+  // We store ALL known user names from the context user + any posts visible.
+  // ComposeModal doesn't have posts, so we expose a minimal set via ctxUser.
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null); // null = closed
+  const [mentionResults, setMentionResults] = useState<{ label: string; handle: string; id: string }[]>([]);
+
+  // Build a local registry from ctxUser (for self-mention test) + passed-in knownHandles
+  // Since ComposeModal has no access to posts, we fetch from Supabase on @-trigger
+  const mentionRegistryRef = useRef<{ label: string; handle: string; id: string }[] | null>(null);
+
+  // Always bust cache on mount so stale handle formats never persist
+  useEffect(() => { mentionRegistryRef.current = null; }, []);
+
+  const loadMentionRegistry = useCallback(async () => {
+    if (mentionRegistryRef.current) return mentionRegistryRef.current;
+    try {
+      const { supabase } = await import("./supabase");
+      if (!supabase) return [];
+      const { data } = await (supabase as any)
+        .from("civique_users")
+        .select("nom, prenom, id")
+        .limit(300);
+      if (!data) return [];
+
+      // Build registry — deduplicate by id and ensure handles are globally unique
+      const seenIds    = new Set<string>();
+      const handleCount = new Map<string, number>(); // track collisions
+      const raw = (data as any[]).map(u => {
+        const prenom = (u.prenom ?? "").trim();
+        const nom    = (u.nom ?? "").trim();
+        const id     = (u.id ?? "").trim();
+        if (!id || seenIds.has(id)) return null;
+        seenIds.add(id);
+        // Label matches feed display order: nom prenom (same as ME_LIVE.name)
+        const full = `${nom} ${prenom}`.trim();
+        const base = `${nom}.${prenom}`.toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-z0-9.]/g, ""); // keep only safe chars
+        handleCount.set(base, (handleCount.get(base) ?? 0) + 1);
+        return { label: full, id, _base: base };
+      }).filter(Boolean) as { label: string; id: string; _base: string }[];
+
+      // Second pass: append numeric suffix only on actually-colliding bases
+      const baseUsed = new Map<string, number>();
+      const registry = raw.map(u => {
+        const count = handleCount.get(u._base) ?? 1;
+        if (count === 1) {
+          return { label: u.label, handle: `@${u._base}`, id: u.id };
+        }
+        const n = (baseUsed.get(u._base) ?? 0) + 1;
+        baseUsed.set(u._base, n);
+        return { label: u.label, handle: `@${u._base}${n}`, id: u.id };
+      });
+
+      mentionRegistryRef.current = registry;
+      return registry;
+    } catch { return []; }
+  }, []);
+
+  const handleTextChange = useCallback(async (val: string) => {
+    if (val.length <= MAX) setText(val);
+
+    // Detect @-query: last @ before cursor with no space after it
+    const cursor = textRef.current?.selectionStart ?? val.length;
+    const before = val.slice(0, cursor);
+    const match  = before.match(/@([\w\u00C0-\u024F][\w\u00C0-\u024F.]*)$/);
+    if (match) {
+      const q = match[1].toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // strip accents for matching
+      setMentionQuery(q);
+      const registry = await loadMentionRegistry();
+      const results = q.length === 0
+        ? registry.slice(0, 6)
+        : registry.filter(u => {
+            // Normalise the stored label for comparison too
+            const norm = u.label.toLowerCase()
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, "");
+            const normHandle = u.handle.slice(1) // strip leading @
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            // Match if query appears anywhere in the normalised name or handle
+            return norm.includes(q) || normHandle.includes(q);
+          }).slice(0, 6);
+      setMentionResults(results);
+    } else {
+      setMentionQuery(null);
+      setMentionResults([]);
+    }
+  }, [MAX, loadMentionRegistry]);
+
+  const pickMention = useCallback((handle: string) => {
+    const el = textRef.current;
+    if (!el) return;
+    const cursor = el.selectionStart ?? text.length;
+    const before = text.slice(0, cursor);
+    const after  = text.slice(cursor);
+    // Replace the partial @query with the full handle + space
+    const replaced = before.replace(/@([\w\u00C0-\u024F][\w\u00C0-\u024F.]*)$/, handle + " ");
+    const newText = replaced + after;
+    setText(newText.slice(0, MAX));
+    setMentionQuery(null);
+    setMentionResults([]);
+    // Restore focus and move cursor after handle
+    setTimeout(() => {
+      el.focus();
+      const pos = replaced.length;
+      el.setSelectionRange(pos, pos);
+    }, 0);
+  }, [text, MAX]);
 
   useEffect(() => { setTimeout(() => textRef.current?.focus(), 80); }, []);
   useEffect(() => {
@@ -1762,7 +1970,18 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, background: C.surface }}>
         <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.text, fontSize: 22, padding: 0, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>←</button>
-        <button onClick={() => { if (canPost) { onPost(text.trim(), imgs.length > 0 ? imgs : undefined, audience); } }} disabled={!canPost} style={{ background: canPost ? C.gold : C.border2, border: "none", borderRadius: 999, padding: "8px 24px", fontSize: 15, fontWeight: 700, color: canPost ? "#fff" : C.dim, cursor: canPost ? "pointer" : "not-allowed", fontFamily: "var(--f-sans)", transition: "background .15s" }}>Publier</button>
+        <button onClick={() => {
+          if (canPost) {
+            // Build handle→userId map from the cached registry so notifyMentions
+            // can resolve @handles even if the mentioned user has no posts in feed
+            const knownIds = new Map<string, string>();
+            for (const u of mentionRegistryRef.current ?? []) {
+              knownIds.set(u.handle.toLowerCase(), u.id);
+              knownIds.set(u.handle.toLowerCase().replace(/^@/, ""), u.id);
+            }
+            onPost(text.trim(), imgs.length > 0 ? imgs : undefined, audience, knownIds);
+          }
+        }} disabled={!canPost} style={{ background: canPost ? C.gold : C.border2, border: "none", borderRadius: 999, padding: "8px 24px", fontSize: 15, fontWeight: 700, color: canPost ? "#fff" : C.dim, cursor: canPost ? "pointer" : "not-allowed", fontFamily: "var(--f-sans)", transition: "background .15s" }}>Publier</button>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 24px" }}>
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
@@ -1793,6 +2012,8 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
                     ? <><circle cx="12" cy="12" r="9" stroke={C.gold} strokeWidth="2"/><path d="M12 3c0 0-4 4-4 9s4 9 4 9M12 3c0 0 4 4 4 9s-4 9-4 9" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/><path d="M3 12h18" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/></>
                     : audience.startsWith("field:")
                     ? <><path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/><path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/></>
+                    : audience.startsWith("subfield:")
+                    ? <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/><path d="M9 7h7M9 11h5" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/></>
                     : <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/><circle cx="9" cy="7" r="4" stroke={C.gold} strokeWidth="2"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/></>
                   }
                 </svg>
@@ -1807,8 +2028,88 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
                 </svg>
               </button>
             </div>
-            <textarea ref={textRef} value={text} onChange={e => { if (e.target.value.length <= MAX) setText(e.target.value); }} placeholder="Quoi de neuf dans vos projets ?"
-              style={{ width: "100%", border: "none", padding: "8px 14px 10px", fontSize: 16, lineHeight: 1.65, color: C.text, background: "transparent", outline: "none", resize: "none", fontFamily: "var(--f-sans)", minHeight: 230, overflowY: "hidden" }} />
+            <div style={{ position: "relative" }}>
+              {/* Syntax highlight layer — sits behind the transparent textarea */}
+              <div aria-hidden="true" style={{
+                position: "absolute", inset: 0,
+                padding: "8px 14px 10px",
+                fontSize: 16, lineHeight: 1.65,
+                fontFamily: "var(--f-sans)",
+                whiteSpace: "pre-wrap", wordBreak: "break-word",
+                color: "transparent",
+                pointerEvents: "none",
+                overflowY: "hidden",
+                zIndex: 0,
+              }}>
+                {/* Render each segment — @handles in blue, rest transparent */}
+                {text.split(/(@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*)/g).map((part, i) => {
+                  if (part.startsWith("@")) {
+                    const clean = part.replace(/\.+$/, "");
+                    const trail = part.slice(clean.length);
+                    return (
+                      <span key={i}>
+                        <span style={{ color: C.blue, fontWeight: 600, background: `${C.blue}15`, borderRadius: 3 }}>{clean}</span>
+                        <span style={{ color: "transparent" }}>{trail}</span>
+                      </span>
+                    );
+                  }
+                  return <span key={i} style={{ color: "transparent" }}>{part}</span>;
+                })}
+              </div>
+              {/* Actual textarea — transparent text, positioned on top */}
+              <textarea ref={textRef} value={text}
+                onChange={e => handleTextChange(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Escape" && mentionQuery !== null) {
+                    setMentionQuery(null); setMentionResults([]);
+                    e.stopPropagation();
+                  }
+                }}
+                placeholder="Quoi de neuf dans vos projets ?"
+                style={{
+                  position: "relative", zIndex: 1,
+                  width: "100%", border: "none",
+                  padding: "8px 14px 10px",
+                  fontSize: 16, lineHeight: 1.65,
+                  color: text.includes("@") ? "transparent" : C.text,
+                  caretColor: C.text,
+                  background: "transparent", outline: "none",
+                  resize: "none", fontFamily: "var(--f-sans)",
+                  minHeight: 230, overflowY: "hidden", boxSizing: "border-box",
+                }} />
+              {/* @mention autocomplete dropdown — appears BELOW the textarea */}
+              {mentionQuery !== null && mentionResults.length > 0 && (
+                <div style={{
+                  position: "absolute", top: "100%", left: 8, right: 8,
+                  background: C.surface, border: `1px solid ${C.border}`,
+                  borderRadius: 14, overflow: "hidden",
+                  boxShadow: "0 8px 24px rgba(0,0,0,.15)",
+                  zIndex: 10,
+                  maxHeight: 240, overflowY: "auto",
+                }}>
+                  {mentionResults.map((u, idx) => (
+                    <button key={u.id} onMouseDown={e => { e.preventDefault(); pickMention(u.handle); }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        width: "100%", padding: "10px 16px",
+                        background: "none", border: "none", cursor: "pointer",
+                        fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
+                        borderBottom: idx < mentionResults.length - 1 ? `1px solid ${C.border}` : "none",
+                      }}>
+                      <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.border2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: C.sub }}>
+                          {u.label.charAt(0).toUpperCase()}
+                        </span>
+                      </div>
+                      <div style={{ textAlign: "left" }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{u.label}</div>
+                        <div style={{ fontSize: 12, color: C.blue }}>{u.handle}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             {imgs.length > 0 && (
               <div style={{ margin: "0 10px 10px" }}>
                 <ImgGrid imgs={imgs} onRemove={i => setImgs(prev => prev.filter((_,idx) => idx !== i))} />
@@ -1865,7 +2166,7 @@ function dbToAuthor(row: DBPost | DBComment): Author {
   return {
     id:     row.author_id,
     name:   `${row.author_nom} ${row.author_prenom}`.trim(),
-    handle: `@${row.author_nom.toLowerCase()}`,
+    handle: `@${(row.author_nom + "." + row.author_prenom).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ".")}`,
     avatar: (row.author_nom[0] ?? "") + (row.author_prenom[0] ?? ""),
     color:  row.author_color,
     tag:    row.author_tag,
@@ -1980,97 +2281,125 @@ function buildAuthorTag(u: UserProfile): string {
   return role ? `${base} · ${role}` : base;
 }
 
-// ── NotifPanel — slide-down notification centre ───────────────
+// ── NotifSheet — bottom sheet notification centre ─────────────
 
-interface LocalNotif { id: string; body: string; from: string; createdAt: string; }
-
-function NotifPanel({ userId, onClose }: { userId: string; onClose: () => void }) {
+function NotifSheet({ userId, onClose }: { userId: string; onClose: () => void }) {
   const C = useC();
-  const key = `civique_notifs_${userId}`;
+  const [notifs, setNotifs] = useState<DBNotif[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const [notifs, setNotifs] = useState<LocalNotif[]>(() => {
-    try { return JSON.parse(localStorage.getItem(key) ?? "[]"); } catch { return []; }
-  });
+  // Load on mount
+  useEffect(() => {
+    loadNotifs(userId).then(data => { setNotifs(data); setLoading(false); });
+  }, [userId]);
 
-  const clearAll = () => {
-    try { localStorage.setItem(key, "[]"); } catch {}
+  // Real-time: new notifs pushed while panel is open
+  useEffect(() => {
+    return subscribeNotifs(userId, n => setNotifs(prev => [n, ...prev]));
+  }, [userId]);
+
+  const dismiss = async (id: string) => {
+    setNotifs(prev => prev.filter(n => n.id !== id));
+    await deleteNotif(id);
+  };
+
+  const clearAll = async () => {
     setNotifs([]);
+    await clearAllNotifs(userId);
   };
 
-  const dismiss = (id: string) => {
-    const next = notifs.filter(n => n.id !== id);
-    try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
-    setNotifs(next);
-  };
-
-  return (
+  return ReactDOM.createPortal(
     <>
       {/* Backdrop */}
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 310, background: "rgba(0,0,0,.35)" }} />
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 310, background: "rgba(0,0,0,.45)" }} />
 
-      {/* Panel */}
+      {/* Bottom sheet */}
       <div style={{
-        position: "fixed", top: 0, right: 0, bottom: 0, width: "min(340px, 92vw)",
+        position: "fixed", bottom: 0, left: 0, right: 0,
         background: C.surface, zIndex: 311,
-        boxShadow: "-6px 0 32px rgba(0,0,0,.18)",
+        borderRadius: "22px 22px 0 0",
+        boxShadow: "0 -4px 32px rgba(0,0,0,.18)",
         display: "flex", flexDirection: "column",
-        animation: "slideInRight .22s cubic-bezier(.2,.8,.3,1) both",
+        maxHeight: "80vh",
+        animation: "sheetUp .25s cubic-bezier(.2,.8,.3,1) both",
+        paddingBottom: "env(safe-area-inset-bottom)",
       }}>
+        {/* Handle */}
+        <div style={{ width: 36, height: 4, borderRadius: 99, background: C.border2, margin: "12px auto 0", flexShrink: 0 }} />
+
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px 12px", flexShrink: 0, borderBottom: `1px solid ${C.border}` }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.gold} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.gold} strokeWidth="1.9" strokeLinecap="round"/>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/>
             </svg>
             <span style={{ fontWeight: 700, fontSize: 17, color: C.text }}>Notifications</span>
-          </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             {notifs.length > 0 && (
-              <button onClick={clearAll} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.sub, fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent" }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.gold, background: `${C.gold}20`, borderRadius: 99, padding: "1px 8px" }}>
+                {notifs.length}
+              </span>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            {notifs.length > 0 && (
+              <button onClick={clearAll} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.sub, fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent", padding: 0 }}>
                 Tout effacer
               </button>
             )}
-            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, fontSize: 20, lineHeight: 1, padding: 2, WebkitTapHighlightColor: "transparent" }}>✕</button>
           </div>
         </div>
 
         {/* List */}
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {notifs.length === 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 12, color: C.dim }}>
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.3 }}>
+          {loading ? (
+            <div style={{ padding: "32px 0", textAlign: "center", color: C.dim, fontSize: 14 }}>Chargement…</div>
+          ) : notifs.length === 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px", gap: 12, color: C.dim }}>
+              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.28 }}>
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
                 <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
               <span style={{ fontSize: 14 }}>Aucune notification</span>
             </div>
           ) : notifs.map(n => (
-            <div key={n.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 18px", borderBottom: `1px solid ${C.border}`, background: C.surface }}>
-              {/* Bell icon accent */}
-              <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.gold + "22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/>
-                </svg>
+            <div key={n.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: `1px solid ${C.border}` }}>
+              {/* Icon */}
+              <div style={{ width: 38, height: 38, borderRadius: "50%", background: n.type === "mention" ? `${C.gold}22` : `${C.blue}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {n.type === "mention" ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="4" stroke={C.gold} strokeWidth="2"/>
+                    <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.blue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.blue} strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                )}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, color: C.text, lineHeight: 1.45 }}>{n.body}</div>
-                <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{fmtTime(n.createdAt)}</div>
+                <div style={{ fontSize: 14, color: C.text, lineHeight: 1.5 }}>{n.body}</div>
+                <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{fmtTime(n.created_at)}</div>
               </div>
-              <button onClick={() => dismiss(n.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, fontSize: 15, padding: "0 2px", flexShrink: 0, lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>✕</button>
+              <button onClick={() => dismiss(n.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, fontSize: 16, padding: "0 2px", flexShrink: 0, lineHeight: 1, WebkitTapHighlightColor: "transparent", marginTop: 2 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </button>
             </div>
           ))}
         </div>
-      </div>
 
-      <style>{`
-        @keyframes slideInRight {
-          from { transform: translateX(100%); opacity: 0; }
-          to   { transform: translateX(0);    opacity: 1; }
-        }
-      `}</style>
-    </>
+        <style>{`
+          @keyframes sheetUp {
+            from { transform: translateY(100%); }
+            to   { transform: translateY(0); }
+          }
+        `}</style>
+      </div>
+    </>,
+    document.body
   );
 }
 
@@ -2078,31 +2407,30 @@ function NotifPanel({ userId, onClose }: { userId: string; onClose: () => void }
 
 function NotifBell({ userId, onClick }: { userId: string; onClick: () => void }) {
   const C = useC();
-  const key = `civique_notifs_${userId}`;
+  const [count, setCount] = useState(0);
 
-  // Poll localStorage every 5 s so the badge stays fresh
-  const [count, setCount] = useState(() => {
-    try { return (JSON.parse(localStorage.getItem(key) ?? "[]") as LocalNotif[]).length; } catch { return 0; }
-  });
-
+  // Load initial unread count from Supabase
   useEffect(() => {
-    const refresh = () => {
-      try { setCount((JSON.parse(localStorage.getItem(key) ?? "[]") as LocalNotif[]).length); } catch {}
-    };
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, [key]);
+    if (!userId) return;
+    loadNotifs(userId).then(data => setCount(data.filter(n => !n.read).length));
+  }, [userId]);
+
+  // Real-time: bump count when new notif arrives
+  useEffect(() => {
+    if (!userId) return;
+    return subscribeNotifs(userId, () => setCount(c => c + 1));
+  }, [userId]);
 
   return (
     <div style={{ position: "relative", flexShrink: 0 }}>
-      <button onClick={onClick} style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: C.sub, WebkitTapHighlightColor: "transparent" }}>
+      <button onClick={() => { setCount(0); onClick(); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: C.sub, WebkitTapHighlightColor: "transparent" }}>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
         </svg>
       </button>
       {count > 0 && (
-        <div style={{ position: "absolute", top: 0, right: 0, width: 16, height: 16, borderRadius: "50%", background: "#E8412A", color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--f-mono)", pointerEvents: "none" }}>
+        <div style={{ position: "absolute", top: 0, right: 0, width: 16, height: 16, borderRadius: "50%", background: C.gold, color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--f-mono)", pointerEvents: "none" }}>
           {count > 9 ? "9+" : count}
         </div>
       )}
@@ -2120,7 +2448,7 @@ export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setT
 
   return (
     <>
-      {showNotifs && <NotifPanel userId={myId} onClose={() => setShowNotifs(false)} />}
+      {showNotifs && <NotifSheet userId={myId} onClose={() => setShowNotifs(false)} />}
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
         {/* Row 1 — Logo centred, icons pinned right */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "10px 16px 6px", position: "relative" }}>
@@ -2293,6 +2621,10 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
   const { faculty: vFaculty, year: vYear } = viewerCtx(currentUser);
 
   // ── Audience gate: hide posts restricted to a field/class the viewer isn't in
+  // Viewer's own normalised subfield key (matches how author stored it)
+  const viewerSubfieldKey = (currentUser?.field ?? "").trim().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\s/\-]+/g, "_");
+
   function passesAudienceGate(p: Post): boolean {
     const aud = p.audience ?? "everyone";
     if (aud === "everyone") return true;
@@ -2302,6 +2634,13 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
       const requiredCode = aud.replace("field:", "");
       const { facultyCode: vCode } = parseTag(ME_LIVE.tag);
       return vCode === requiredCode;
+    }
+    if (aud.startsWith("subfield:")) {
+      const requiredKey = aud.replace("subfield:", "");
+      // Viewer must be in the same faculty AND same sub-field
+      const { facultyCode: vCode } = parseTag(ME_LIVE.tag);
+      const { facultyCode: pCode } = parseTag(p.author.tag);
+      return vCode === pCode && viewerSubfieldKey === requiredKey;
     }
     if (aud.startsWith("class:")) {
       const required = aud.replace("class:", ""); // e.g. "eco.3"
@@ -2336,7 +2675,76 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     return ranked;
   })();
 
-  const addPost = (text: string, imgs?: string[], audience: AudienceValue = "everyone") => {
+  // ── @mention notification helper ─────────────────────────────
+  // Scans `text` for @handles, matches them against all known post authors,
+  // and pushes a local notification to each matched user (excluding the poster).
+  // notifyMentions: resolves @handles to real user IDs via Supabase
+  // then pushes cross-device notifications.
+  // knownIds: optional pre-built map from ComposeModal's registry (handle → userId)
+  const notifyMentions = useCallback(async (
+    text: string,
+    context: "post" | "comment",
+    contextBody?: string,
+    knownIds?: Map<string, string>
+  ) => {
+    const mentions = text.match(/@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*/g) ?? [];
+    if (!mentions.length) return;
+
+    // Build a handle→userId map for all unique mentions
+    const notified = new Set<string>();
+    const preview  = contextBody
+      ? ` : « ${contextBody.slice(0, 60)}${contextBody.length > 60 ? "…" : ""} »`
+      : "";
+
+    for (const mention of mentions) {
+      const norm = mention.toLowerCase().replace(/^@/, "");
+
+      // 1. Check the pre-built registry map first (from ComposeModal autocomplete)
+      let targetId = knownIds?.get(norm) ?? knownIds?.get(`@${norm}`);
+
+      // 2. Fallback: resolve from posts already in memory
+      if (!targetId) {
+        for (const p of posts) {
+          const h = p.author.handle.toLowerCase().replace(/^@/, "");
+          if (h === norm) { targetId = p.author.id; break; }
+        }
+      }
+
+      // 3. Last resort: query Supabase directly by nom+prenom
+      if (!targetId) {
+        try {
+          const { supabase } = await import("./supabase");
+          if (supabase) {
+            // norm is "nom.prenom" — split and search
+            const [nom, ...rest] = norm.split(".");
+            const prenom = rest.join(".");
+            const { data } = await (supabase as any)
+              .from("civique_users")
+              .select("id")
+              .ilike("nom", nom)
+              .ilike("prenom", prenom.replace(/_/g, " "))
+              .limit(1)
+              .maybeSingle();
+            if (data?.id) targetId = data.id;
+          }
+        } catch {}
+      }
+
+      if (!targetId || targetId === ME_LIVE.id || notified.has(targetId)) continue;
+      notified.add(targetId);
+
+      pushNotif(targetId, {
+        id:     `mention_${Date.now()}_${targetId}`,
+        body:   context === "post"
+          ? `${ME_LIVE.name} vous a mentionné dans une publication${preview}`
+          : `${ME_LIVE.name} vous a mentionné dans un commentaire${preview}`,
+        fromId: ME_LIVE.id,
+        type:   "mention",
+      });
+    }
+  }, [posts, ME_LIVE]);
+
+  const addPost = (text: string, imgs?: string[], audience: AudienceValue = "everyone", knownIds?: Map<string, string>) => {
     const now = new Date().toISOString();
     const newPost: Post = {
       id: `p${Date.now()}_${nextId.current++}`,
@@ -2348,10 +2756,11 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     };
     setPosts(prev => [newPost, ...prev]);
     insertPost(postToDb(newPost));
+    notifyMentions(text, "post", text, knownIds);
   };
 
   const addComment = (postId: string, text: string, imgs?: string[]) => {
-    stampFreeze(); // hold feed order stable for SCORE_FREEZE_MS
+    stampFreeze();
     const now = new Date().toISOString();
     const nc: Comment = {
       id: `c${Date.now()}_${nextId.current++}`,
@@ -2364,26 +2773,22 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     insertComment(commentToDb(nc, postId));
     incrementCommentCount(postId);
 
-    // Nametag drop detection: find @handle mentions in the comment
-    const mentions = text.match(/@[\w\u00C0-\u024F]+/g) ?? [];
-    if (mentions.length > 0) {
-      // Find the post author to notify them if the mention matches their handle
-      const post = posts.find(p => p.id === postId);
-      if (post) {
-        for (const mention of mentions) {
-          // Notify the post author if someone @mentions them in a comment on their post
-          const normalised = mention.toLowerCase();
-          // Build expected handle for post author: @nom+prenom
-          const postAuthorHandle = `@${post.author.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"")}`;
-          if (normalised === postAuthorHandle && post.author.id !== ME_LIVE.id) {
-            pushLocalNotif(post.author.id, {
-              id:        `notif_${Date.now()}`,
-              body:      `${ME_LIVE.name} a mentionné votre profil ${mention} dans un commentaire`,
-              from:      ME_LIVE.id,
-              createdAt: now,
-            });
-          }
-        }
+    // Notify @mentioned users in the comment
+    notifyMentions(text, "comment", text);
+
+    const post = posts.find(p => p.id === postId);
+    if (post && post.author.id !== ME_LIVE.id) {
+      const authorHandle = post.author.handle.toLowerCase();
+      const alreadyMentioned = (text.match(/@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*/g) ?? [])
+        .map(m => m.toLowerCase())
+        .some(m => m === authorHandle || m === authorHandle.slice(1));
+      if (!alreadyMentioned) {
+        pushNotif(post.author.id, {
+          id:     `comment_${Date.now()}_${post.author.id}`,
+          body:   `${ME_LIVE.name} a commenté votre publication`,
+          fromId: ME_LIVE.id,
+          type:   "comment",
+        });
       }
     }
   };
@@ -2472,10 +2877,8 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
   const knownHandles = useMemo(() => {
     const s = new Set<string>();
     for (const p of posts) {
-      // normalise: "Jean Dupont" → "jeandupont", stored without @
-      const h = p.author.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "");
-      if (h) s.add(h);
-      // also add from the handle field itself (strip leading @, lowercase)
+      // Canonical handle stored without @ — must match the nom.prenom format
+      // used in ME_LIVE, dbToAuthor, and the mention registry
       const raw = p.author.handle.replace(/^@/, "").toLowerCase();
       if (raw) s.add(raw);
     }
@@ -2484,7 +2887,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
 
   return (
     <>
-    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience) => { addPost(text, imgs, audience); setShowCompose(false); setComposeDraft(""); }} />}
+    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} userField={currentUser?.field ?? ""} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience, knownIds) => { addPost(text, imgs, audience, knownIds); setShowCompose(false); setComposeDraft(""); }} />}
     <div onScroll={handleScroll} style={{ background: C.bg, minHeight: "100%", overflowY: "auto", height: "100%" }}>
 
       {/* InlineCompose intentionally removed — use the FAB (+ button) to compose */}

@@ -82,50 +82,50 @@ const FACULTIES: string[] = [
   "FAMV – Agronomie & Médecine Vétérinaire",
 ];
 
+// 3 roles only — same as the original design
+const ROLES = ["Étudiant·e", "Décanat", "Rectorat"] as const;
+
+// Departments per faculty — shown for Décanat, not for Rectorat or student
+const DEPARTEMENTS: Record<string, string[]> = {
+  "FDSE – Droit & Sciences Économiques": ["Économique", "Juridique", "N/A"],
+  "FLA – Lettres & Arts":                ["Lettres & Linguistique", "Arts & Culture", "Communication", "N/A"],
+  "FST – Sciences & Technologies":       ["Mathématiques & Physique", "Chimie & Biologie", "Informatique", "N/A"],
+  "FMP – Médecine & Pharmacie":          ["Médecine", "Pharmacie", "Stomatologie", "N/A"],
+  "FASCH – Sciences Humaines":           ["Sociologie & Psychologie", "Histoire & Géographie", "Sciences Politiques", "N/A"],
+  "FGC – Génie Civil":                   ["Génie Civil", "Génie Électrique", "Génie Mécanique", "Génie Informatique", "N/A"],
+  "FA – Architecture":                   ["Architecture", "Urbanisme", "N/A"],
+  "FAMV – Agronomie & Médecine Vétérinaire": ["Agronomie", "Médecine Vétérinaire", "Agroéconomie", "N/A"],
+};
+
 const FIELDS: Record<string, string[]> = {
   "FDSE – Droit & Sciences Économiques": [
     "Sciences Économiques", "Droit Privé", "Droit Public",
-    "Gestion des Entreprises", "Finance & Comptabilité",
-    "Commerce International",
+    "Gestion des Entreprises", "Finance & Comptabilité", "Commerce International",
   ],
   "FLA – Lettres & Arts": [
     "Lettres Modernes", "Langues Étrangères Appliquées",
     "Arts Plastiques", "Communication & Journalisme",
   ],
-  "FST – Sciences & Technologies": [
-    "Mathématiques", "Physique", "Chimie",
-    "Informatique", "Biologie",
-  ],
-  "FMP – Médecine & Pharmacie": [
-    "Médecine Générale", "Pharmacie", "Stomatologie",
-  ],
-  "FASCH – Sciences Humaines": [
-    "Sociologie", "Psychologie", "Histoire & Géographie",
-    "Philosophie", "Sciences Politiques",
-  ],
-  "FGC – Génie Civil": [
-    "Génie Civil", "Génie Électrique", "Génie Mécanique",
-    "Génie Informatique",
-  ],
-  "FA – Architecture": [
-    "Architecture", "Urbanisme & Aménagement",
-  ],
-  "FAMV – Agronomie & Médecine Vétérinaire": [
-    "Agronomie", "Médecine Vétérinaire", "Agroéconomie",
-  ],
+  "FST – Sciences & Technologies": ["Mathématiques", "Physique", "Chimie", "Informatique", "Biologie"],
+  "FMP – Médecine & Pharmacie":    ["Médecine Générale", "Pharmacie", "Stomatologie"],
+  "FASCH – Sciences Humaines":     ["Sociologie", "Psychologie", "Histoire & Géographie", "Philosophie", "Sciences Politiques"],
+  "FGC – Génie Civil":             ["Génie Civil", "Génie Électrique", "Génie Mécanique", "Génie Informatique"],
+  "FA – Architecture":             ["Architecture", "Urbanisme & Aménagement"],
+  "FAMV – Agronomie & Médecine Vétérinaire": ["Agronomie", "Médecine Vétérinaire", "Agroéconomie"],
 };
 
 const VACATIONS = ["Jour", "Soir"] as const;
 
-const ROLES = [
-  "Étudiant·e",
-  "Décanat",
-  "Rectorat",
-  "N/A",
-] as const;
+const DEFAULT_FACULTY = "FDSE – Droit & Sciences Économiques";
+const DEFAULT_FIELD   = "Sciences Économiques";
+const DEFAULT_DEPT    = "Économique";
 
-// Roles that don't need academic fields (year, vacation, faculty, field, matricule)
-const NON_STUDENT_ROLES: string[] = ["Décanat", "Rectorat", "N/A"];
+const DECANAT_FONCTIONS  = ["Doyen·ne", "Vice-doyen·ne", "Secrétaire", "Autre"] as const;
+const RECTORAT_FONCTIONS = ["Recteur·e", "Vice-recteur·e", "Secrétaire général·e", "Autre"] as const;
+
+const STUDENT_ROLE  = "Étudiant·e";
+const DECANAT_ROLE  = "Décanat";
+const RECTORAT_ROLE = "Rectorat";
 
 const AVATAR_COLORS = [
   "#4A6FA5","#5A8A6F","#8B5E3C","#7B4F8E",
@@ -1095,84 +1095,129 @@ function normalize(s: string) {
 // ─── SCREEN: STEP 1 — IDENTITY + ACADEMIC INFO ───────────────
 
 interface Step1Data {
-  matricule:  string;
-  nom:        string;
-  prenom:     string;
-  sexe:       string;
-  faculty:    string;
-  field:      string;
-  year:       string;
-  vacation:   string;
-  role:       string;
-  roleDetail: string;
+  nom:            string;
+  prenom:         string;
+  sexe:           string;
+  role:           string;
+  fonctionDetail: string;  // selected or typed fonction
+  faculty:        string;
+  departement:    string;
+  matricule:      string;
+  field:          string;
+  year:           string;
+  vacation:       string;
 }
 
-function Step1Screen({
-  onBack, onNext,
-}: {
-  onBack: () => void;
-  onNext: (data: Step1Data) => void;
-}) {
+const DEFAULT_STEP1: Step1Data = {
+  nom: "", prenom: "", sexe: "M",
+  role:            STUDENT_ROLE,
+  fonctionDetail:  "",
+  faculty:         DEFAULT_FACULTY,
+  departement:     DEFAULT_DEPT,
+  matricule:       "",
+  field:           DEFAULT_FIELD,
+  year:            "",
+  vacation:        "Jour",
+};
+
+function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: Step1Data) => void }) {
   const C = useC();
-  const [d, setD] = useState<Step1Data>({
-    matricule: "", nom: "", prenom: "",
-    sexe: "M",
-    faculty: "FDSE – Droit & Sciences Économiques",
-    field:   "Sciences Économiques",
-    year: "", vacation: "Jour", role: "Étudiant·e", roleDetail: "",
-  });
-  const [errors, setErrors] = useState<Partial<Record<keyof Step1Data, boolean>>>({});
+  const [d, setD] = useState<Step1Data>(DEFAULT_STEP1);
+  const [errors, setErrors]     = useState<Partial<Record<keyof Step1Data, boolean>>>({});
   const [dupError, setDupError] = useState("");
+  const [dupChecking, setDupChecking] = useState(false);
+
+  const isStudent  = d.role === STUDENT_ROLE;
+  const isDecanat  = d.role === DECANAT_ROLE;
+  const isRectorat = d.role === RECTORAT_ROLE;
+
+  // For Décanat: only Doyen hides département
+  const isDoyen       = isDecanat && d.fonctionDetail === "Doyen·ne";
+  const decanatAutre  = isDecanat  && d.fonctionDetail === "Autre";
+  const rectoratAutre = isRectorat && d.fonctionDetail === "Autre";
 
   const set = (k: keyof Step1Data, v: string) => {
     setD(prev => {
       const next = { ...prev, [k]: v };
-      // When faculty changes, reset field
-      if (k === "faculty") next.field = "";
+      if (k === "role") {
+        // Set smart defaults per role
+        if (v === STUDENT_ROLE) {
+          next.fonctionDetail = "";
+          next.faculty        = DEFAULT_FACULTY;
+          next.departement    = DEFAULT_DEPT;
+          next.field          = DEFAULT_FIELD;
+          next.year           = "";
+        } else if (v === DECANAT_ROLE) {
+          next.fonctionDetail = "Doyen·ne";   // default
+          next.faculty        = DEFAULT_FACULTY;
+          next.departement    = "";           // doyen = no dept by default
+          next.field          = "";
+          next.matricule      = "";
+          next.year           = "";
+        } else if (v === RECTORAT_ROLE) {
+          next.fonctionDetail = "Recteur·e";  // default
+          next.faculty        = "";
+          next.departement    = "";
+          next.field          = "";
+          next.matricule      = "";
+          next.year           = "";
+        }
+      }
+      if (k === "fonctionDetail") {
+        // When switching from Doyen to something else, set dept default
+        if (isDecanat && prev.fonctionDetail === "Doyen·ne" && v !== "Doyen·ne") {
+          next.departement = DEFAULT_DEPT;
+        }
+        // When switching back to Doyen, clear dept
+        if (isDecanat && v === "Doyen·ne") {
+          next.departement = "";
+        }
+      }
+      if (k === "faculty") {
+        next.departement = DEFAULT_DEPT in (DEPARTEMENTS[v] ?? []) ? DEFAULT_DEPT : (DEPARTEMENTS[v]?.[0] ?? "");
+        next.field       = FIELDS[v]?.[0] ?? "";
+      }
       return next;
     });
     setErrors(prev => ({ ...prev, [k]: false }));
   };
 
-  const availableFields = d.faculty ? (FIELDS[d.faculty] ?? []) : [];
-
   const validate = (): boolean => {
     const e: Partial<Record<keyof Step1Data, boolean>> = {};
-    const isNonStudent = NON_STUDENT_ROLES.includes(d.role);
-    if (!d.matricule.trim() && !isNonStudent) e.matricule = true;
-    if (!d.nom.trim())       e.nom       = true;
-    if (!d.prenom.trim())    e.prenom    = true;
-    if (!isNonStudent) {
-      if (!d.faculty)        e.faculty   = true;
-      if (!d.field)          e.field     = true;
-      if (!d.year || +d.year < 1 || +d.year > 7) e.year = true;
-      if (!d.vacation)       e.vacation  = true;
+    if (!d.nom.trim())    e.nom    = true;
+    if (!d.prenom.trim()) e.prenom = true;
+    if (!d.role)          e.role   = true;
+    if (isDecanat) {
+      if (!d.fonctionDetail.trim()) e.fonctionDetail = true;
+      if (!d.faculty)               e.faculty        = true;
+      if (!isDoyen && !d.departement) e.departement  = true;
     }
-    if (!d.role)             e.role      = true;
-    if (d.role === "Rectorat" && !d.roleDetail.trim()) e.roleDetail = true;
-    if (d.role === "Décanat" && !d.roleDetail.trim())  e.roleDetail = true;
+    if (isRectorat) {
+      if (!d.fonctionDetail.trim()) e.fonctionDetail = true;
+    }
+    if (isStudent) {
+      if (!d.faculty)                              e.faculty   = true;
+      if (!d.field)                                e.field     = true;
+      if (!d.matricule.trim())                     e.matricule = true;
+      if (!d.year || +d.year < 1 || +d.year > 7)  e.year      = true;
+      if (!d.vacation)                             e.vacation  = true;
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   };
 
-  const [dupChecking, setDupChecking] = useState(false);
+  const SL = ({ txt }: { txt: string }) => (
+    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.5px", color: C.dim, textTransform: "uppercase", marginBottom: 14, marginTop: 6 }}>
+      {txt}
+    </div>
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100%" }}>
-      {/* Header */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 12,
-        padding: "14px 16px 0", flexShrink: 0,
-      }}>
-        <button onClick={onBack} style={{
-          background: "none", border: "none", cursor: "pointer",
-          fontSize: 22, color: C.gold, padding: "0 4px",
-          WebkitTapHighlightColor: "transparent",
-        }}>‹</button>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px 0", flexShrink: 0 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: C.gold, padding: "0 4px", WebkitTapHighlightColor: "transparent" }}>‹</button>
         <div>
-          <div style={{ fontWeight: 700, fontSize: 18, color: C.text }}>
-            Créer mon compte
-          </div>
+          <div style={{ fontWeight: 700, fontSize: 18, color: C.text }}>Créer mon compte</div>
           <div style={{ fontSize: 12, color: C.sub }}>Étape 1 sur 2 — Vos informations</div>
         </div>
       </div>
@@ -1181,37 +1226,20 @@ function Step1Screen({
         <StepDots step={1} />
       </div>
 
-      {/* Scrollable form */}
       <div style={{ flex: 1, overflowY: "auto", padding: "0 24px 24px" }}>
 
-        {/* ── Identity ── */}
-        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.5px", color: C.dim, textTransform: "uppercase", marginBottom: 14 }}>
-          Identité
-        </div>
-
-        {/* Row 1: Nom + Prénom */}
+        <SL txt="Identité" />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
           <div>
             <Label>Nom *</Label>
-            <StyledInput
-              value={d.nom}
-              onChange={e => set("nom", e.target.value)}
-              placeholder="Nom"
-              error={errors.nom}
-            />
+            <StyledInput value={d.nom} onChange={e => set("nom", e.target.value)} placeholder="Nom" error={errors.nom}/>
           </div>
           <div>
             <Label>Prénom *</Label>
-            <StyledInput
-              value={d.prenom}
-              onChange={e => set("prenom", e.target.value)}
-              placeholder="Prénom"
-              error={errors.prenom}
-            />
+            <StyledInput value={d.prenom} onChange={e => set("prenom", e.target.value)} placeholder="Prénom" error={errors.prenom}/>
           </div>
         </div>
 
-        {/* Row 2: Sexe (full width, before role) */}
         <FieldWrap>
           <Label>Sexe *</Label>
           <StyledSelect value={d.sexe} onChange={v => set("sexe", v)} error={errors.sexe}>
@@ -1220,10 +1248,7 @@ function Step1Screen({
           </StyledSelect>
         </FieldWrap>
 
-        {/* ── Role (controls which fields appear below) ── */}
-        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.5px", color: C.dim, textTransform: "uppercase", marginBottom: 14, marginTop: 6 }}>
-          Rôle dans l'institution
-        </div>
+        <SL txt="Statut dans l'institution" />
 
         <FieldWrap>
           <Label>Statut *</Label>
@@ -1232,38 +1257,110 @@ function Step1Screen({
           </StyledSelect>
         </FieldWrap>
 
-        {/* Rectorat / Décanat free-text */}
-        {(d.role === "Rectorat" || d.role === "Décanat") && (
-          <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
-            <Label>Précisez votre fonction *</Label>
-            <StyledInput
-              value={d.roleDetail}
-              onChange={e => set("roleDetail", e.target.value)}
-              placeholder="ex : Vice-doyen, Resp. communication…"
-              error={errors.roleDetail}
-            />
-          </FieldWrap>
-        )}
-
-        {/* Matricule — shown only for students */}
-        {!NON_STUDENT_ROLES.includes(d.role) && (
-          <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
-            <Label>Matricule étudiant *</Label>
-            <StyledInput
-              value={d.matricule}
-              onChange={e => set("matricule", e.target.value)}
-              placeholder="ex : 2021-0042"
-              autoCapitalize="none"
-              error={errors.matricule}
-            />
-          </FieldWrap>
-        )}
-
-        {/* ── Academic fields — hidden for non-student roles ── */}
-        {!NON_STUDENT_ROLES.includes(d.role) && (
+        {/* ── DÉCANAT ── */}
+        {isDecanat && (
           <>
-            {/* Faculté + Filière */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+            {/* Fonction — dropdown, switches to text if "Autre" */}
+            <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
+              <Label>Fonction *</Label>
+              {decanatAutre ? (
+                <StyledInput
+                  value={d.fonctionDetail}
+                  onChange={e => set("fonctionDetail", e.target.value)}
+                  placeholder="Précisez votre fonction…"
+                  error={errors.fonctionDetail}
+                  autoFocus
+                />
+              ) : (
+                <StyledSelect value={d.fonctionDetail} onChange={v => set("fonctionDetail", v)} error={errors.fonctionDetail}>
+                  {DECANAT_FONCTIONS.map(f => <option key={f} value={f}>{f}</option>)}
+                </StyledSelect>
+              )}
+            </FieldWrap>
+
+            {/* Doyen: only faculty */}
+            {isDoyen && (
+              <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
+                <Label>Faculté *</Label>
+                <StyledSelect value={d.faculty} onChange={v => set("faculty", v)} error={errors.faculty}>
+                  {FACULTIES.map(f => <option key={f} value={f}>{f}</option>)}
+                </StyledSelect>
+              </FieldWrap>
+            )}
+
+            {/* Non-doyen: faculty + département same row */}
+            {!isDoyen && !decanatAutre && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18, animation: "fadeup .2s ease both" }}>
+                <div>
+                  <Label>Faculté *</Label>
+                  <StyledSelect value={d.faculty} onChange={v => set("faculty", v)} error={errors.faculty}>
+                    {FACULTIES.map(f => <option key={f} value={f}>{f}</option>)}
+                  </StyledSelect>
+                </div>
+                <div>
+                  <Label>Département *</Label>
+                  <StyledSelect value={d.departement} onChange={v => set("departement", v)} error={errors.departement}>
+                    {(DEPARTEMENTS[d.faculty] ?? []).map(dep => <option key={dep} value={dep}>{dep}</option>)}
+                  </StyledSelect>
+                </div>
+              </div>
+            )}
+
+            {/* Autre: show faculty + dept after typing */}
+            {decanatAutre && d.fonctionDetail.trim().length > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18, animation: "fadeup .2s ease both" }}>
+                <div>
+                  <Label>Faculté *</Label>
+                  <StyledSelect value={d.faculty} onChange={v => set("faculty", v)} error={errors.faculty}>
+                    {FACULTIES.map(f => <option key={f} value={f}>{f}</option>)}
+                  </StyledSelect>
+                </div>
+                <div>
+                  <Label>Département *</Label>
+                  <StyledSelect value={d.departement} onChange={v => set("departement", v)} error={errors.departement}>
+                    {(DEPARTEMENTS[d.faculty] ?? []).map(dep => <option key={dep} value={dep}>{dep}</option>)}
+                  </StyledSelect>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── RECTORAT ── */}
+        {isRectorat && (
+          <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
+            <Label>Fonction *</Label>
+            {rectoratAutre ? (
+              <StyledInput
+                value={d.fonctionDetail}
+                onChange={e => set("fonctionDetail", e.target.value)}
+                placeholder="Précisez votre fonction…"
+                error={errors.fonctionDetail}
+                autoFocus
+              />
+            ) : (
+              <StyledSelect value={d.fonctionDetail} onChange={v => set("fonctionDetail", v)} error={errors.fonctionDetail}>
+                {RECTORAT_FONCTIONS.map(f => <option key={f} value={f}>{f}</option>)}
+              </StyledSelect>
+            )}
+          </FieldWrap>
+        )}
+
+        {/* ── ÉTUDIANT·E ── */}
+        {isStudent && (
+          <>
+            <FieldWrap style={{ animation: "fadeup .2s ease both" }}>
+              <Label>Matricule étudiant *</Label>
+              <StyledInput
+                value={d.matricule}
+                onChange={e => set("matricule", e.target.value)}
+                placeholder="ex : 2021-0042"
+                autoCapitalize="none"
+                error={errors.matricule}
+              />
+            </FieldWrap>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18, animation: "fadeup .2s ease both" }}>
               <div>
                 <Label>Faculté *</Label>
                 <StyledSelect value={d.faculty} onChange={v => set("faculty", v)} error={errors.faculty}>
@@ -1273,20 +1370,13 @@ function Step1Screen({
               <div>
                 <Label>Filière *</Label>
                 <StyledSelect value={d.field} onChange={v => set("field", v)} error={errors.field}>
-                  <option value="" disabled>
-                    {d.faculty ? "Filière…" : "— d'abord la faculté"}
-                  </option>
-                  {availableFields.map(f => <option key={f} value={f}>{f}</option>)}
+                  {(FIELDS[d.faculty] ?? []).map(f => <option key={f} value={f}>{f}</option>)}
                 </StyledSelect>
               </div>
             </div>
 
-            {/* ── Academic info ── */}
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.5px", color: C.dim, textTransform: "uppercase", marginBottom: 14, marginTop: 6 }}>
-              Parcours académique
-            </div>
+            <SL txt="Parcours académique" />
 
-            {/* Year + Vacation side by side */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
               <div>
                 <Label>Année (1–7) *</Label>
@@ -1305,49 +1395,36 @@ function Step1Screen({
               <div>
                 <Label>Vacation *</Label>
                 <StyledSelect value={d.vacation} onChange={v => set("vacation", v)} error={errors.vacation}>
-                  <option value="" disabled>Choisir…</option>
                   {VACATIONS.map(v => <option key={v} value={v}>{v}</option>)}
-                  <option value="N/A">N/A</option>
                 </StyledSelect>
               </div>
             </div>
           </>
         )}
 
-        {/* Any field error reminder */}
         {Object.keys(errors).length > 0 && !dupError && (
-          <div style={{
-            fontSize: 13, color: "#E8412A",
-            background: "#FDF1EF", borderRadius: 10,
-            padding: "10px 14px", marginBottom: 8,
-          }}>
+          <div style={{ fontSize: 13, color: "#E8412A", background: "#FDF1EF", borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
             Veuillez corriger les champs en rouge.
           </div>
         )}
         {dupError && (
-          <div style={{
-            fontSize: 13, color: "#E8412A",
-            background: "#FDF1EF", borderRadius: 10,
-            padding: "10px 14px", marginBottom: 8,
-            lineHeight: 1.5,
-          }}>
+          <div style={{ fontSize: 13, color: "#E8412A", background: "#FDF1EF", borderRadius: 10, padding: "10px 14px", marginBottom: 8, lineHeight: 1.5 }}>
             {dupError}
           </div>
         )}
       </div>
 
-      {/* CTA pinned */}
       <div style={{ padding: "12px 24px 28px", flexShrink: 0 }}>
         <PrimaryBtn onClick={async () => {
           setDupError("");
           if (!validate()) return;
-          if (!NON_STUDENT_ROLES.includes(d.role) && d.matricule.trim()) {
+          if (isStudent && d.matricule.trim()) {
             setDupChecking(true);
             const isDup = await checkDuplicate(d.matricule);
             setDupChecking(false);
             if (isDup) {
               setErrors(prev => ({ ...prev, matricule: true }));
-              setDupError("Ce matricule est déjà associé à un compte. Utilisez « J'ai déjà un compte » pour vous connecter.");
+              setDupError("Ce matricule est déjà associé à un compte. Utilisez « J\'ai déjà un compte » pour vous connecter.");
               return;
             }
           }
@@ -2229,8 +2306,6 @@ export default function AuthFlow({ onAuth }: { onAuth: (user: UserProfile) => vo
 
   const handleStep2 = (photo: string) => {
     if (!step1) return;
-    // Build + persist synchronously BEFORE switching screen so the ref is
-    // always populated when ProcessingScreen calls onDone.
     const user: UserProfile = {
       id:          randomId(),
       matricule:   step1.matricule,
@@ -2239,16 +2314,15 @@ export default function AuthFlow({ onAuth }: { onAuth: (user: UserProfile) => vo
       sexe:        step1.sexe,
       faculty:     step1.faculty,
       field:       step1.field,
-      year:        +step1.year,
+      year:        +step1.year || 0,
       vacation:    step1.vacation,
       role:        step1.role,
-      roleDetail:  step1.roleDetail,
-      badgePhoto:  photo,   // base64 stored in DB for admin review
-      status:      "pending", // admin must verify before full access
+      roleDetail:  step1.fonctionDetail
+                     + (step1.departement ? ` – ${step1.departement}` : ""),
+      badgePhoto:  photo,
+      status:      "pending",
       avatarColor: randomColor(),
-      badge:       (step1.role === "Rectorat" || step1.role === "Décanat")
-                     ? "gray"
-                     : null,
+      badge:       step1.role === STUDENT_ROLE ? null : "gray",
       createdAt:   new Date().toISOString(),
     };
     pendingUserRef.current = user;

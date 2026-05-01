@@ -7,13 +7,14 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import ReactDOM from "react-dom";
+import React from "react";
 import { useC } from "./tokens";
 import { useLang } from "./LangContext";
 import { useTheme } from "./ThemeContext";
 import { useProfile } from "./ProfileContext";
 // SQL: ALTER TABLE civique_users ADD COLUMN IF NOT EXISTS profile_photo text;
 import { updateUserPhoto } from "./db";
-import React from "react";
 
 // ─── localStorage key — must match page.tsx ───────────────────
 const SESSION_KEY = "civique_user_id";
@@ -292,13 +293,7 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
 
   return (
     <>
-      {/* Backdrop */}
-      {open && (
-        <div onClick={() => { setOpen(false); setLangOpen(false); }}
-          style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(0,0,0,.25)" }} />
-      )}
-
-      {/* Dots trigger */}
+      {/* Dots trigger — stays inline in the header */}
       <button
         onClick={() => { setOpen(o => !o); setLangOpen(false); }}
         style={{
@@ -317,102 +312,134 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
         ))}
       </button>
 
-      {/* Dropdown panel */}
-      <div style={{
-        position: "fixed", top: 0, right: 0,
-        width: "60%", height: "100vh",
-        background: C.surface, zIndex: 301,
-        borderLeft: `1px solid ${C.border}`,
-        boxShadow: "-4px 4px 24px rgba(0,0,0,.12)",
-        opacity: open ? 1 : 0,
-        transform: open ? "translateX(0)" : "translateX(20px)",
-        pointerEvents: open ? "auto" : "none",
-        transition: "transform .22s cubic-bezier(.2,.8,.3,1), opacity .18s ease",
-        display: "flex", flexDirection: "column", overflow: "hidden",
-      }}>
-        {/* ── User profile card — reads live user from ProfileContext ── */}
-        <UserCard profilePic={profilePic} userProp={userProp} />
-        <div style={{ height: 1, background: C.border, margin: "0 16px 8px", flexShrink: 0 }} />
+      {/* Backdrop + Dropdown — portalled to body so position:fixed always escapes stacking contexts */}
+      {typeof document !== "undefined" && ReactDOM.createPortal(
+        <>
+          {open && (
+            <div onClick={() => { setOpen(false); setLangOpen(false); }}
+              style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(0,0,0,.25)" }} />
+          )}
 
-        {/* Set photo */}
-        <button style={row} onClick={e => { e.stopPropagation(); setOpen(false); setTimeout(() => setPhotoSheet(true), 50); }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="8" r="4" stroke={C.sub} strokeWidth="1.6"/>
-            <path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" stroke={C.sub} strokeWidth="1.6" strokeLinecap="round"/>
-          </svg>
-          <span style={{ fontSize: 14, color: C.text }}>{t("menu.setPhoto")}</span>
-        </button>
-        <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
+          <div style={{
+            position: "fixed", top: 0, right: 0,
+            width: "60%", height: "100vh",
+            background: C.surface, zIndex: 301,
+            borderLeft: `1px solid ${C.border}`,
+            boxShadow: "-4px 4px 24px rgba(0,0,0,.12)",
+            opacity: open ? 1 : 0,
+            transform: open ? "translateX(0)" : "translateX(20px)",
+            pointerEvents: open ? "auto" : "none",
+            transition: "transform .22s cubic-bezier(.2,.8,.3,1), opacity .18s ease",
+            display: "flex", flexDirection: "column", overflow: "hidden",
+          }}>
+            <UserCard profilePic={profilePic} userProp={userProp} />
+            <div style={{ height: 1, background: C.border, margin: "0 16px 8px", flexShrink: 0 }} />
 
-        {/* Language */}
-        <button style={row} onClick={() => setLangOpen(o => !o)}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="9" stroke={C.sub} strokeWidth="1.6"/>
-            <path d="M12 3c-2.5 3-4 5.5-4 9s1.5 6 4 9M12 3c2.5 3 4 5.5 4 9s-1.5 6-4 9M3 12h18" stroke={C.sub} strokeWidth="1.4"/>
-          </svg>
-          <span style={{ fontSize: 14, color: C.text }}>{t("menu.language")}</span>
-          <span style={{ marginLeft: "auto", fontSize: 12, color: C.sub }}>{LANG_LABELS[lang]}</span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-            style={{ marginLeft: 6, transition: "transform .2s", transform: langOpen ? "rotate(180deg)" : "rotate(0deg)" }}>
-            <path d="M6 9l6 6 6-6" stroke={C.sub} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
-        {langOpen && (["fr","ht"] as const).map(l => (
-          <button key={l} onClick={() => { setLang(l); setLangOpen(false); }}
-            style={{ ...row, paddingLeft: 44, background: lang === l ? C.goldBg : "transparent" }}>
-            <span style={{ fontSize: 14, color: lang === l ? C.gold : C.text, fontWeight: lang === l ? 600 : 400 }}>
-              {LANG_LABELS[l]}
-            </span>
-          </button>
-        ))}
-        <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
+            {/* Set photo */}
+            <button style={row} onClick={e => { e.stopPropagation(); setOpen(false); setTimeout(() => setPhotoSheet(true), 50); }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="8" r="4" stroke={C.sub} strokeWidth="1.6"/>
+                <path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" stroke={C.sub} strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
+              <span style={{ fontSize: 14, color: C.text }}>{t("menu.setPhoto")}</span>
+            </button>
+            <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
 
-        {/* Dark mode */}
-        <div style={{ ...row, cursor: "default" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" stroke={C.sub} strokeWidth="1.6"/>
-          </svg>
-          <span style={{ fontSize: 14, color: C.text }}>{t("menu.darkMode")}</span>
-          <div style={{ marginLeft: "auto" }} onClick={() => setTheme(darkMode ? "light" : "dark")}>
-            <div style={{ width: 42, height: 24, borderRadius: 99, background: darkMode ? C.gold : C.border2, position: "relative", transition: "background .2s", cursor: "pointer" }}>
-              <div style={{ position: "absolute", top: 3, left: darkMode ? 21 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,.2)", transition: "left .2s" }} />
+            {/* Language */}
+            <button style={row} onClick={() => setLangOpen(o => !o)}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="9" stroke={C.sub} strokeWidth="1.6"/>
+                <path d="M12 3c-2.5 3-4 5.5-4 9s1.5 6 4 9M12 3c2.5 3 4 5.5 4 9s-1.5 6-4 9M3 12h18" stroke={C.sub} strokeWidth="1.4"/>
+              </svg>
+              <span style={{ fontSize: 14, color: C.text }}>{t("menu.language")}</span>
+              <span style={{ marginLeft: "auto", fontSize: 12, color: C.sub }}>{LANG_LABELS[lang]}</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                style={{ marginLeft: 6, transition: "transform .2s", transform: langOpen ? "rotate(180deg)" : "rotate(0deg)" }}>
+                <path d="M6 9l6 6 6-6" stroke={C.sub} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+            {langOpen && (["fr","ht"] as const).map(l => (
+              <button key={l} onClick={() => { setLang(l); setLangOpen(false); }}
+                style={{ ...row, paddingLeft: 44, background: lang === l ? C.goldBg : "transparent" }}>
+                <span style={{ fontSize: 14, color: lang === l ? C.gold : C.text, fontWeight: lang === l ? 600 : 400 }}>
+                  {LANG_LABELS[l]}
+                </span>
+              </button>
+            ))}
+            <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
+
+            {/* Dark mode */}
+            <div style={{ ...row, cursor: "default" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" stroke={C.sub} strokeWidth="1.6"/>
+              </svg>
+              <span style={{ fontSize: 14, color: C.text }}>{t("menu.darkMode")}</span>
+              <div style={{ marginLeft: "auto" }} onClick={() => setTheme(darkMode ? "light" : "dark")}>
+                <div style={{ width: 42, height: 24, borderRadius: 99, background: darkMode ? C.gold : C.border2, position: "relative", transition: "background .2s", cursor: "pointer" }}>
+                  <div style={{ position: "absolute", top: 3, left: darkMode ? 21 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,.2)", transition: "left .2s" }} />
+                </div>
+              </div>
+            </div>
+            <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
+
+            {/* Notifications */}
+            <div style={{ ...row, cursor: "default" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.sub} strokeWidth="1.6"/>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.sub} strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
+              <span style={{ fontSize: 14, color: C.text }}>{t("menu.notifications")}</span>
+              <div style={{ marginLeft: "auto" }} onClick={() => setNotifs(n => !n)}>
+                <div style={{ width: 42, height: 24, borderRadius: 99, background: notifs ? C.gold : C.border2, position: "relative", transition: "background .2s", cursor: "pointer" }}>
+                  <div style={{ position: "absolute", top: 3, left: notifs ? 21 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,.2)", transition: "left .2s" }} />
+                </div>
+              </div>
+            </div>
+            <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
+
+            {/* Sign out */}
+            <button style={row} onClick={handleSignOut}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                <polyline points="16 17 21 12 16 7" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                <line x1="21" y1="12" x2="9" y2="12" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
+              <span style={{ fontSize: 14, color: "#E8412A", fontWeight: 500 }}>{t("menu.signOut")}</span>
+            </button>
+
+            <div style={{ flex: 1 }} />
+            <div style={{ textAlign: "center", padding: "16px 20px 32px", fontSize: 10, color: C.dim }}>
+              {t("menu.credit")}
             </div>
           </div>
-        </div>
-        <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
 
-        {/* Notifications */}
-        <div style={{ ...row, cursor: "default" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke={C.sub} strokeWidth="1.6"/>
-            <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.sub} strokeWidth="1.6" strokeLinecap="round"/>
-          </svg>
-          <span style={{ fontSize: 14, color: C.text }}>{t("menu.notifications")}</span>
-          <div style={{ marginLeft: "auto" }} onClick={() => setNotifs(n => !n)}>
-            <div style={{ width: 42, height: 24, borderRadius: 99, background: notifs ? C.gold : C.border2, position: "relative", transition: "background .2s", cursor: "pointer" }}>
-              <div style={{ position: "absolute", top: 3, left: notifs ? 21 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,.2)", transition: "left .2s" }} />
-            </div>
-          </div>
-        </div>
-        <div style={{ height: 1, background: C.border, margin: "0 16px", flexShrink: 0 }} />
+          {/* Photo sheet + CropScreen also portalled so they cover the full screen */}
+          {photoSheet && (
+            <PhotoSheet
+              onClose={() => setPhotoSheet(false)}
+              onGallery={() => { setPhotoSheet(false); setTimeout(() => fileRef.current?.click(), 80); }}
+              onCamera={() => { setPhotoSheet(false); setTimeout(() => { if (fileRef.current) { fileRef.current.setAttribute("capture","user"); fileRef.current.click(); } }, 80); }}
+            />
+          )}
+          {cropSrc && (
+            <CropScreen
+              src={cropSrc}
+              onCancel={() => { setCropSrc(null); setPhotoSheet(true); }}
+              onConfirm={dataUrl => {
+                setProfilePic(dataUrl);
+                setCropSrc(null);
+                setOpen(false);
+                const uid = userProp?.id ?? ctxUser?.id;
+                if (uid) updateUserPhoto(uid, dataUrl);
+                if (ctxUser) ctxSetUser({ ...ctxUser, profilePhoto: dataUrl });
+              }}
+            />
+          )}
+        </>,
+        document.body
+      )}
 
-        {/* Sign out */}
-        <button style={row} onClick={handleSignOut}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            <polyline points="16 17 21 12 16 7" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            <line x1="21" y1="12" x2="9" y2="12" stroke="#E8412A" strokeWidth="1.6" strokeLinecap="round"/>
-          </svg>
-          <span style={{ fontSize: 14, color: "#E8412A", fontWeight: 500 }}>{t("menu.signOut")}</span>
-        </button>
-
-        <div style={{ flex: 1 }} />
-        <div style={{ textAlign: "center", padding: "16px 20px 32px", fontSize: 10, color: C.dim }}>
-          {t("menu.credit")}
-        </div>
-      </div>
-
-      {/* Hidden file input */}
+      {/* Hidden file input — must stay in component tree to keep ref alive */}
       <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }}
         onChange={e => {
           const file = e.target.files?.[0]; if (!file) return;
@@ -420,29 +447,6 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
           setPhotoSheet(false);
           e.target.value = "";
         }} />
-
-      {/* Photo sheet */}
-      {photoSheet && (
-        <PhotoSheet
-          onClose={() => setPhotoSheet(false)}
-          onGallery={() => { setPhotoSheet(false); setTimeout(() => fileRef.current?.click(), 80); }}
-          onCamera={() => { setPhotoSheet(false); setTimeout(() => { if (fileRef.current) { fileRef.current.setAttribute("capture","user"); fileRef.current.click(); } }, 80); }}
-        />
-      )}
-      {cropSrc && (
-        <CropScreen
-          src={cropSrc}
-          onCancel={() => { setCropSrc(null); setPhotoSheet(true); }}
-          onConfirm={dataUrl => {
-            setProfilePic(dataUrl);
-            setCropSrc(null);
-            setOpen(false);
-            const uid = userProp?.id ?? ctxUser?.id;
-            if (uid) updateUserPhoto(uid, dataUrl);
-            if (ctxUser) ctxSetUser({ ...ctxUser, profilePhoto: dataUrl });
-          }}
-        />
-      )}
     </>
   );
 }

@@ -195,7 +195,6 @@ export interface DBPost {
   views:      number;
   comment_count?: number;
   quoted_post?: string;  // JSON-encoded QuotedPost snapshot for cite-reposts
-  audience?: string;     // "everyone" | "field:<code>" | "class:<code>.<year>"
 }
 
 // ── Realtime subscriptions ────────────────────────────────────
@@ -251,19 +250,8 @@ export async function loadPosts(): Promise<DBPost[]> {
 
 export async function insertPost(post: DBPost): Promise<void> {
   if (!DB_READY || !supabase) return;
-  // Try inserting with all fields first. If Supabase rejects because the
-  // 'audience' column doesn't exist yet (schema not migrated), retry without it.
   const { error } = await supabase.from("civique_posts").insert(post);
-  if (error) {
-    if (error.message.includes("audience")) {
-      // Column not yet added — strip it and retry
-      const { audience: _aud, ...postWithout } = post as any;
-      const { error: e2 } = await supabase.from("civique_posts").insert(postWithout);
-      if (e2) console.error("insertPost:", e2.message);
-    } else {
-      console.error("insertPost:", error.message);
-    }
-  }
+  if (error) console.error("insertPost:", error.message);
 }
 
 export async function deletePost(id: string): Promise<void> {
@@ -506,7 +494,97 @@ export async function canDM(senderId: string, targetHandle: string, targetId: st
 }
 
 // ── Notifications ─────────────────────────────────────────────
+// Table DDL (run once in Supabase SQL editor):
+// CREATE TABLE IF NOT EXISTS civique_notifications (
+//   id          text PRIMARY KEY,
+//   user_id     text NOT NULL,          -- recipient
+//   from_id     text NOT NULL,          -- sender
+//   body        text NOT NULL,
+//   type        text NOT NULL DEFAULT 'mention',
+//   read        boolean NOT NULL DEFAULT false,
+//   created_at  timestamptz NOT NULL DEFAULT now()
+// );
+// CREATE INDEX IF NOT EXISTS notif_user_idx ON civique_notifications (user_id, created_at DESC);
+
+export interface DBNotif {
+  id:         string;
+  user_id:    string;
+  from_id:    string;
+  body:       string;
+  type:       string;
+  read:       boolean;
+  created_at: string;
+}
+
+/** Push a notification to a user — writes to Supabase so cross-device delivery works. */
+export async function pushNotif(
+  userId: string,
+  notif: { id: string; body: string; fromId: string; type?: string }
+): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  const row: DBNotif = {
+    id:         notif.id,
+    user_id:    userId,
+    from_id:    notif.fromId,
+    body:       notif.body,
+    type:       notif.type ?? "mention",
+    read:       false,
+    created_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from("civique_notifications").insert(row);
+  if (error) console.error("pushNotif:", error.message);
+}
+
+/** Load notifications for a user, most recent first. */
+export async function loadNotifs(userId: string, limit = 50): Promise<DBNotif[]> {
+  if (!DB_READY || !supabase) return [];
+  const { data, error } = await supabase
+    .from("civique_notifications")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) { console.error("loadNotifs:", error.message); return []; }
+  return (data ?? []) as DBNotif[];
+}
+
+/** Mark one notification as read. */
+export async function markNotifRead(id: string): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  await supabase.from("civique_notifications").update({ read: true }).eq("id", id);
+}
+
+/** Delete one notification. */
+export async function deleteNotif(id: string): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  await supabase.from("civique_notifications").delete().eq("id", id);
+}
+
+/** Delete all notifications for a user. */
+export async function clearAllNotifs(userId: string): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  await supabase.from("civique_notifications").delete().eq("user_id", userId);
+}
+
+/** Subscribe to new notifications for a user in real-time. */
+export function subscribeNotifs(userId: string, cb: (notif: DBNotif) => void): () => void {
+  if (!DB_READY || !supabase) return () => {};
+  const channel = supabase
+    .channel(`notifs:${userId}`)
+    .on("postgres_changes", {
+      event: "INSERT", schema: "public",
+      table: "civique_notifications",
+      filter: `user_id=eq.${userId}`,
+    }, payload => cb(payload.new as DBNotif))
+    .subscribe();
+  return () => { supabase!.removeChannel(channel); };
+}
+
+/** Keep backward-compat shim — writes to Supabase if available, localStorage otherwise. */
 export function pushLocalNotif(userId: string, notif: { id: string; body: string; from: string; createdAt: string }): void {
+  // Fire-and-forget Supabase write; fallback to localStorage for offline
+  pushNotif(userId, { id: notif.id, body: notif.body, fromId: notif.from, type: "mention" })
+    .catch(() => {});
   try {
     const key  = `civique_notifs_${userId}`;
     const prev = JSON.parse(localStorage.getItem(key) ?? "[]");
