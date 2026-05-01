@@ -1505,7 +1505,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
 
   const handleShare = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setShowMenu(false);
+    setShowMenuSheet(false);
     // X (Twitter)-style WhatsApp share card:
     // Line 1: "Name (@handle) sur Civic"  ← bold header
     // Line 2: blank
@@ -1664,7 +1664,7 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
         isMine={isMine}
         userId={userId}
         onClose={() => setShowMenuSheet(false)}
-        onShare={handleShare}
+        onShare={() => handleShare({ stopPropagation: () => {} } as React.MouseEvent)}
         onDelete={onDelete}
         onHide={onHide}
       />,
@@ -2835,6 +2835,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
         commentCount: 0,
         comments:     [],
         showComments: false,
+        audience:     "everyone",
         quotedPost: {
           id:     original.id,
           author: original.author,
