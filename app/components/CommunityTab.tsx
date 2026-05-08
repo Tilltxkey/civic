@@ -188,7 +188,12 @@ const FIELD_CODE: Record<string, string> = {
   "Génie Mécanique":           "gem",
 };
 
-// Reverse map: field code → full filière name (for @-mention audience parsing)
+// Normalise a faculty value — strips legacy long-form suffixes stored in old DB rows.
+// "FDSE – Droit & Sciences Économiques" → "FDSE"
+function normFac(faculty: string | undefined | null): string {
+  if (!faculty) return "";
+  return faculty.split(/\s[–\-—]/)[0].trim();
+}
 
 function categoryMultiplier(
   postTag:    string,
@@ -440,7 +445,19 @@ function VerifiedBadge({ type, size = 15 }: { type: "gold" | "blue" | "gray"; si
   );
 }
 
-// ── AudienceSheet — bottom sheet for post visibility ─────────
+// Inside each modal/sheet: registers onClose with the browser back stack.
+// When the user presses the phone back button, the topmost layer closes instead of leaving the app.
+function useLayerBack(onClose: () => void) {
+  const saved = useRef(onClose);
+  saved.current = onClose;
+  useEffect(() => {
+    window.history.pushState({ civique: true }, "");
+    const handler = () => { saved.current(); };
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+}
+
 
 type AudienceValue =
   | "everyone"
@@ -464,6 +481,7 @@ function AudienceSheet({ current, options, onPick, onClose }: {
   onClose:  () => void;
 }) {
   const C = useC();
+  useLayerBack(onClose);
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 300 }} />
@@ -540,12 +558,11 @@ function AudienceSheet({ current, options, onPick, onClose }: {
 
 function buildAudienceOptions(
   me: Author,
-  userField?: string,   // u.field  e.g. "Sciences Économiques"
-  userFaculty?: string, // u.faculty e.g. "FDSE"
-  userRole?: string,    // u.role   e.g. "Étudiant·e" | "Décanat" | "Rectorat"
+  userField?: string,
+  userFaculty?: string,
+  userRole?: string,
   userYear?: number,
 ): AudienceOption[] {
-  // ── Icon helpers ─────────────────────────────────────────────
   const globeIcon = (sel: boolean) => (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
       <circle cx="12" cy="12" r="9" stroke={sel ? "#fff" : "#888"} strokeWidth="1.8"/>
@@ -557,13 +574,6 @@ function buildAudienceOptions(
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
       <rect x="3" y="3" width="18" height="18" rx="2" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7"/>
       <path d="M3 9h18M9 9v12" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
-    </svg>
-  );
-  const stackIcon = (sel: boolean) => (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-      <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
-      <path d="M2 12l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
-      <path d="M2 16l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
     </svg>
   );
   const bookIcon = (sel: boolean) => (
@@ -580,7 +590,6 @@ function buildAudienceOptions(
     </svg>
   );
 
-  // ── Option 1 — always available ───────────────────────────────
   const opts: AudienceOption[] = [{
     value:    "everyone",
     label:    "Tout le monde",
@@ -588,34 +597,30 @@ function buildAudienceOptions(
     icon:     globeIcon,
   }];
 
-  // Rectorat: only "everyone"
   if (userRole === "Rectorat") return opts;
 
   const fac   = userFaculty ?? "";
   const field = userField   ?? "";
   const yr    = userYear    ?? 1;
+  const code  = field ? (FIELD_CODE[field] ?? field).toUpperCase() : "";
 
-  // ── Décanat: role-specific scoping ──────────────────────────
+  // ── Décanat ─────────────────────────────────────────────────
   if (userRole === "Décanat") {
-    const fn = (fac && field) ? "" : ""; // roleDetail not passed here but fac/field are
-    const isDoyen = !field; // Doyen has no specific field (oversees full faculty)
-
+    // All Décanat: Ma faculté
     if (fac) {
-      // All Décanat members can post to their whole faculty
       opts.push({
         value:    `faculty:${fac}` as AudienceValue,
-        label:    `Ma faculté · ${fac}`,
+        label:    fac,
         sublabel: `Tous les étudiants de ${fac}`,
         icon:     buildingIcon,
       });
     }
-    // Vice-doyen + Secrétaire: also offer their specific département (field)
+    // Décanat with a registered département/filière: Mon parcours
     if (fac && field) {
-      const code = (FIELD_CODE[field] ?? field).toUpperCase();
       opts.push({
         value:    `subfield:${fac}:${field}` as AudienceValue,
-        label:    `Mon département · ${code} · ${fac}`,
-        sublabel: `Étudiants de ${field} à ${fac}`,
+        label:    `${fac} ${code}`,
+        sublabel: `Étudiants en ${field} à ${fac}`,
         icon:     bookIcon,
       });
     }
@@ -623,31 +628,26 @@ function buildAudienceOptions(
   }
 
   // ── Étudiant / autres ───────────────────────────────────────
-  // 3 — Ma faculté
   if (fac) {
     opts.push({
       value:    `faculty:${fac}` as AudienceValue,
-      label:    `Ma faculté · ${fac}`,
+      label:    fac,
       sublabel: `Tous les étudiants de ${fac}`,
       icon:     buildingIcon,
     });
   }
-  // 4 — Mon parcours
   if (fac && field) {
-    const code = (FIELD_CODE[field] ?? field).toUpperCase();
     opts.push({
       value:    `subfield:${fac}:${field}` as AudienceValue,
-      label:    `Mon parcours · ${code} · ${fac}`,
+      label:    `${fac} ${code}`,
       sublabel: `Étudiants en ${field} à ${fac}`,
       icon:     bookIcon,
     });
   }
-  // 5 — Ma promotion
   if (fac && field && yr) {
-    const code = (FIELD_CODE[field] ?? field).toUpperCase();
     opts.push({
       value:    `class:${fac}:${field}:${yr}` as AudienceValue,
-      label:    `Ma promo · ${code}${yr} · ${fac}`,
+      label:    `${code}${yr}`,
       sublabel: `Vos collègues de promotion à ${fac}`,
       icon:     groupIcon,
     });
@@ -665,7 +665,7 @@ function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnT
 
   if (audience.startsWith("faculty:")) {
     const fac = audience.slice("faculty:".length);
-    label = `Faculté · ${fac}`;
+    label = fac;
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
         <rect x="3" y="3" width="18" height="18" rx="2" stroke={C.gold} strokeWidth="2.2"/>
@@ -673,10 +673,12 @@ function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnT
       </svg>
     );
   } else if (audience.startsWith("subfield:")) {
-    // format: subfield:FAC:Filière Name
-    const parts = audience.split(":");
-    const field = parts.slice(2).join(":"); // safe if field name has colons
-    label = `Parcours · ${field}`;
+    // subfield:FAC:Filière Name  →  FDSE ECO
+    const parts     = audience.split(":");
+    const fac       = parts[1];
+    const fieldName = parts.slice(2).join(":");
+    const code      = (FIELD_CODE[fieldName] ?? fieldName).toUpperCase();
+    label = `${fac} ${code}`;
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
         <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -684,12 +686,12 @@ function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnT
       </svg>
     );
   } else if (audience.startsWith("class:")) {
-    // format: class:FAC:Filière Name:year  →  ECO2 · FDSE
-    const parts = audience.split(":");
-    const yr    = parts[parts.length - 1];
+    // class:FAC:Filière:year  →  ECO3
+    const parts     = audience.split(":");
+    const yr        = parts[parts.length - 1];
     const fieldName = parts.slice(2, parts.length - 1).join(":");
-    const codeC  = (FIELD_CODE[fieldName] ?? fieldName).toUpperCase();
-    label = `${codeC}${yr} · ${parts[1]}`;
+    const code      = (FIELD_CODE[fieldName] ?? fieldName).toUpperCase();
+    label = `${code}${yr}`;
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
         <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
@@ -698,14 +700,13 @@ function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnT
       </svg>
     );
   } else if (audience.startsWith("classv:")) {
-    // format: classv:FAC:Filière:year:Jour|Soir  →  ECO2AM · FDSE
-    const parts = audience.split(":");
-    const vac   = parts[parts.length - 1];
-    const yr    = parts[parts.length - 2];
+    // classv:FAC:Filière:year:Jour|Soir  →  ECO3AM
+    const parts     = audience.split(":");
+    const vac       = parts[parts.length - 1];
+    const yr        = parts[parts.length - 2];
     const fieldName = parts.slice(2, parts.length - 2).join(":");
-    const codeV  = (FIELD_CODE[fieldName] ?? fieldName).toUpperCase();
-    const vacLabel = vac === "Jour" ? "AM" : "PM";
-    label = `${codeV}${yr}${vacLabel} · ${parts[1]}`;
+    const code      = (FIELD_CODE[fieldName] ?? fieldName).toUpperCase();
+    label = `${code}${yr}${vac === "Jour" ? "AM" : "PM"}`;
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
         <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
@@ -714,9 +715,8 @@ function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnT
       </svg>
     );
   } else if (audience.startsWith("field:")) {
-    // Legacy format — kept for old posts
-    const legacyCode = audience.slice("field:".length).toUpperCase();
-    label = `Filière · ${legacyCode}`;
+    // Legacy format
+    label = audience.slice("field:".length).toUpperCase();
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
         <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
@@ -853,10 +853,10 @@ function RepostSheet({ post, me, profilePic, isReposted, onClose, onSimpleRepost
   onQuotePost:   (text: string, imgs?: string[]) => void; // quote-repost
 }) {
   const C = useC();
+  useLayerBack(onClose);
   const { profilePic: ctxPic } = useProfile();
   const livePic = ctxPic ?? profilePic;
 
-  // Quote compose state
   const [quoting, setQuoting]     = useState(false);
   const [text, setText]           = useState("");
   const [imgs, setImgs]           = useState<string[]>([]);
@@ -1004,6 +1004,7 @@ function PostMenuSheet({ post, isMine, userId, onClose, onShare, onDelete, onHid
   onHide:   () => void;
 }) {
   const C = useC();
+  useLayerBack(onClose);
 
   // ── Connect state (localStorage, per viewer per author) ──────
   const connectKey = `civique_connected_${userId}`;
@@ -1141,6 +1142,7 @@ function PostMenuSheet({ post, isMine, userId, onClose, onShare, onDelete, onHid
 // ── ImageViewer — fullscreen lightbox ────────────────────────
 
 function ImageViewer({ src, onClose }: { src: string; onClose: () => void }) {
+  useLayerBack(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
@@ -1254,6 +1256,7 @@ function ReplyScreen({ post, onClose, onSubmit, me = { id: "", name: "Moi", hand
   post: Post; onClose: () => void; onSubmit: (text: string, imgs?: string[]) => void; me?: Author; profilePic?: string | null;
 }) {
   const C = useC();
+  useLayerBack(onClose);
   const { profilePic: ctxPic } = useProfile();
   const livePic = ctxPic ?? profilePic;
   const [text, setText]               = useState("");
@@ -1363,6 +1366,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
   knownHandles?:  Set<string>;
 }) {
   const C = useC();
+  useLayerBack(onClose);
   const { profilePic: ctxPic, user: ctxUser } = useProfile();
   const myId = ctxUser?.id ?? me.id;
   const isMinePost = post.author.id === myId || post.author.id === me.id;
@@ -1925,6 +1929,7 @@ function InlineCompose({ me, profilePic = null, onPost }: {
 
 function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "", userField = "", userFaculty = "", userRole = "", userYear = 1 }: { onClose: () => void; onPost: (text: string, imgs?: string[], audience?: AudienceValue, knownIds?: Map<string, string>) => void; me: Author; profilePic?: string | null; initialText?: string; userField?: string; userFaculty?: string; userRole?: string; userYear?: number }) {
   const C = useC();
+  useLayerBack(onClose);
   const { profilePic: ctxPic, user: ctxUser } = useProfile();
   const livePic = ctxPic ?? profilePic;
   const [text, setText]               = useState(initialText);
@@ -2377,7 +2382,7 @@ function buildAuthorTag(u: UserProfile): string {
   // ── Décanat ─────────────────────────────────────────────────
   if (u.role === "Décanat") {
     const fn  = (u.roleDetail ?? "").trim();
-    const fac = u.faculty;
+    const fac = normFac(u.faculty);
     let code: string;
     if (fn.startsWith("Doyen"))           code = masc ? "Doyen"     : "Doyenne";
     else if (fn.startsWith("Vice-doyen")) code = masc ? "V.-doyen"  : "V.-doyenne";
@@ -2449,6 +2454,7 @@ function buildAuthorTag(u: UserProfile): string {
 
 function NotifSheet({ userId, onClose, onPostClick }: { userId: string; onClose: () => void; onPostClick?: (postId: string) => void }) {
   const C = useC();
+  useLayerBack(onClose);
   const [notifs, setNotifs] = useState<DBNotif[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -2852,7 +2858,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     // No viewer info → show the post (fan-out notifs are the real enforcement)
     if (!viewer) return true;
 
-    const vFaculty  = viewer.faculty  ?? "";
+    const vFaculty  = normFac(viewer.faculty);
     const vField    = viewer.field    ?? "";
     const vYear     = viewer.year     ?? 1;
     const vRole     = viewer.role     ?? "";
@@ -3155,7 +3161,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
 
   return (
     <>
-    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} userField={currentUser?.field ?? ""} userFaculty={currentUser?.faculty ?? ""} userRole={currentUser?.role ?? ""} userYear={currentUser?.year ?? 1} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience, knownIds) => { addPost(text, imgs, audience, knownIds); setShowCompose(false); setComposeDraft(""); }} />}
+    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} userField={currentUser?.field ?? ""} userFaculty={normFac(currentUser?.faculty)} userRole={currentUser?.role ?? ""} userYear={currentUser?.year ?? 1} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience, knownIds) => { addPost(text, imgs, audience, knownIds); setShowCompose(false); setComposeDraft(""); }} />}
     <div onScroll={handleScroll} style={{ background: C.bg, minHeight: "100%", overflowY: "auto", height: "100%" }}>
 
       {/* InlineCompose intentionally removed — use the FAB (+ button) to compose */}

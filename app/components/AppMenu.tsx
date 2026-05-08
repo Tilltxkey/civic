@@ -181,32 +181,85 @@ function VerifiedBadgeMini({ type }: { type: "gold"|"blue"|"gray" }) {
 }
 
 function buildTag(user: import("./AuthFlow").UserProfile): string {
-  const fmap: Record<string,string> = {
-    "FDSE – Droit & Sciences Économiques": "eco",
-    "FLA – Lettres & Arts": "fla",
-    "FST – Sciences & Technologies": "fst",
-    "FMP – Médecine & Pharmacie": "fmp",
-    "FASCH – Sciences Humaines": "fasch",
-    "FGC – Génie Civil": "fgc",
-    "FA – Architecture": "fa",
-    "FAMV – Agronomie & Médecine Vétérinaire": "famv",
+  const masc = user.sexe?.toUpperCase() === "M";
+
+  // ── Rectorat ──────────────────────────────────────────────────
+  if (user.role === "Rectorat") {
+    const fn = (user.roleDetail ?? "").trim();
+    if (fn.startsWith("Recteur"))        return masc ? "Recteur"     : "Rectrice";
+    if (fn.startsWith("Vice-recteur"))   return masc ? "V.-recteur"  : "V.-rectrice";
+    if (fn.startsWith("Secrétaire gén")) return "Sec. gén.";
+    return fn || "Rectorat";
+  }
+
+  // ── Décanat ───────────────────────────────────────────────────
+  if (user.role === "Décanat") {
+    const fn  = (user.roleDetail ?? "").trim();
+    const fac = user.faculty;
+    let code: string;
+    if (fn.startsWith("Doyen"))           code = masc ? "Doyen"     : "Doyenne";
+    else if (fn.startsWith("Vice-doyen")) code = masc ? "V.-doyen"  : "V.-doyenne";
+    else if (fn.startsWith("Secrétaire")) code = "Sec.";
+    else                                  code = fn || "Décanat";
+    return fac ? `${code} · ${fac}` : code;
+  }
+
+  // ── Étudiant / autres ─────────────────────────────────────────
+  const FIELD_CODE: Record<string, string> = {
+    "Sciences Économiques":      "eco",
+    "Sciences Juridiques":       "droit",
+    "Gestion des Affaires":      "ges",
+    "Comptabilité":              "cpt",
+    "Administration Publique":   "adm",
+    "Relations Internationales": "rin",
+    "Génie Civil":               "gc",
+    "Électromécanique":          "em",
+    "Électronique":              "en",
+    "Architecture":              "arc",
+    "Chimie":                    "chi",
+    "Topographie":               "topo",
+    "Sociologie":                "soc",
+    "Psychologie":               "psy",
+    "Travail Social":            "tso",
+    "Communication Sociale":     "com",
+    "Anthropologie-Sociologie":  "aso",
+    "Linguistique Appliquée":    "ling",
+    "Agronomie":                 "agro",
+    "Mathématiques":             "math",
+    "Physique":                  "phy",
+    "Philosophie":               "philo",
+    "Lettres Modernes":          "let",
+    "Sciences Sociales":         "sso",
+    "Langues Vivantes":          "lan",
+    "Économie Appliquée":        "eap",
+    "Statistique":               "stat",
+    "Médecine":                  "med",
+    "Pharmacie":                 "pha",
+    "Biologie Médicale":         "bim",
+    "Odontologie":               "odo",
+    "Histoire":                  "his",
+    "Géographie":                "geo",
+    "Patrimoine et Tourisme":    "tou",
+    "Informatique":              "inf",
+    "Sciences Infirmières":      "infir",
+    "Génie Électrique":          "gel",
+    "Génie Mécanique":           "gem",
   };
-  const rmap: Record<string,string> = {
-    "Délégué·e de classe":                "del.",
-    "Président·e d'association":          "prés.",
-    "Membre CEP":                         "cep",
-    "CEP — Responsable désigné·e":        "cep.resp.",
-    "Rectorat":                           "rect.",
-    "Responsable Affaires Académiques":   "RAA",
-    "Délégué·e":                          "dél.",
-    "Trésorier·e":                        "trés.",
-    "Secrétaire":                         "sec.",
-    "Président·e du Comité Exécutif":     "prés. CE",
+  const studentRoles: Record<string, string> = {
+    "Délégué·e de classe":            "del.",
+    "Président·e d'association":      "prés.",
+    "Membre CEP":                     "cep",
+    "CEP — Responsable désigné·e":    "cep.resp.",
+    "Responsable Affaires Académiques": "RAA",
+    "Délégué·e":                      "dél.",
+    "Trésorier·e":                    "trés.",
+    "Secrétaire":                     "sec.",
+    "Président·e du Comité Exécutif": "prés. CE",
   };
-  const fcode = fmap[user.faculty] ?? "fdse";
-  const base  = `${fcode}.${user.year}`;
-  const role  = rmap[user.role];
-  return role ? `${base} · ${role}` : base;
+  const code       = FIELD_CODE[user.field] ?? user.field?.toLowerCase().slice(0, 4) ?? "?";
+  const base       = `${code}.${user.year}`;
+  const roleSuffix = studentRoles[user.role];
+  return roleSuffix ? `${base} · ${roleSuffix}` : base;
 }
 
 /**

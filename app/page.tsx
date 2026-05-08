@@ -228,6 +228,56 @@ function AppShell({
 }: AppShellProps) {
   const C = useC();
   const { t } = useLang();
+
+  // ── Double back-press to exit ─────────────────────────────
+  const backPressedRef = useRef(false);
+  const backTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showBackToast, setShowBackToast] = useState(false);
+  const toastTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    history.pushState({ civic: true }, "");
+
+    const onPopState = () => {
+      if (backPressedRef.current) {
+        history.back();
+        return;
+      }
+      history.pushState({ civic: true }, "");
+      backPressedRef.current = true;
+      setShowBackToast(true);
+      if (backTimerRef.current)  clearTimeout(backTimerRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      backTimerRef.current  = setTimeout(() => { backPressedRef.current = false; }, 2000);
+      toastTimerRef.current = setTimeout(() => setShowBackToast(false), 2000);
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      if (backTimerRef.current)  clearTimeout(backTimerRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+  const TAB_ORDER = ["results", "vote", "community"] as const;
+  const swipeRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    swipeRef.current = { x: touch.clientX, y: touch.clientY };
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!swipeRef.current) return;
+    const dx = e.changedTouches[0].clientX - swipeRef.current.x;
+    const dy = e.changedTouches[0].clientY - swipeRef.current.y;
+    swipeRef.current = null;
+    if (Math.abs(dy) > Math.abs(dx)) return; // vertical scroll — ignore
+    if (Math.abs(dx) < 50) return;            // too short — ignore
+    const idx = TAB_ORDER.indexOf(activeTab as any);
+    if (dx < 0 && idx < TAB_ORDER.length - 1) setActiveTab(TAB_ORDER[idx + 1]);
+    if (dx > 0 && idx > 0)                    setActiveTab(TAB_ORDER[idx - 1]);
+  };
   const { election } = useElection();
 
   const [selectedRaceId, setSelectedRaceId] = useState<string>("president");
@@ -353,7 +403,7 @@ function AppShell({
         {activeTab === "community" && <CommunityHeader tab={communityFeed} setTab={setCommunityFeed} user={user} />}
 
         {/* Scrollable content */}
-        <div id="main-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", background: C.bg }}>
+        <div id="main-scroll" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", background: C.bg }}>
           {activeTab === "vote" && (!user || (user.year >= 1 && !!user.field)) && (
             <Race votesA={vA} votesB={vB} reporting={rep} selectedRaceId={selectedRaceId} onCardClick={handleCardClick} />
           )}
@@ -458,6 +508,20 @@ function AppShell({
 
       {/* PDF Viewer — page level, covers navbar */}
       {openThesis && <PDFViewer thesis={openThesis} onClose={() => setOpenThesis(null)} />}
+
+      {/* ── Double back-press toast ── */}
+      {showBackToast && (
+        <div style={{
+          position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)",
+          background: "rgba(0,0,0,0.75)", color: "#fff",
+          fontSize: 13, fontWeight: 500, letterSpacing: ".2px",
+          padding: "10px 10px", borderRadius: 99,
+          pointerEvents: "none", zIndex: 9999,
+          animation: "fadeInUp .2s ease",
+        }}>
+          Appuyez encore pour quitter
+        </div>
+      )}
     </>
   );
 }
@@ -532,7 +596,6 @@ export default function Page() {
   const [composePrefill, setComposePrefill] = useState("");
   const C = useC();
   const { t } = useLang();
-
   // ── Responsive ─────────────────────────
   // 0 during SSR — return null to avoid hydration mismatch
   const vw = useWindowWidth();

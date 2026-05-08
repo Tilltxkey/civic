@@ -115,10 +115,8 @@ function YearBlock({ year, faculty, field }: { year: number; faculty: string; fi
           return facMatch && fieldMatch && yearMatch;
         });
 
-        // Prefer exact vacation match, fallback to any
-        const elData = matching.find(e => e.category.split("|")[3] === vacation)
-          ?? matching[0]
-          ?? null;
+        // Strict vacation match only — no fallback to other vacation
+        const elData = matching.find(e => e.category.split("|")[3] === vacation) ?? null;
 
         if (!elData) {
           if (!cancelled) { 
@@ -197,7 +195,7 @@ function YearBlock({ year, faculty, field }: { year: number; faculty: string; fi
 
     load();
     return () => { cancelled = true; };
-  }, [vacation, faculty, field, year]); // Fetch on mount and when vacation changes
+  }, [open, vacation, faculty, field, year]); // Fetch on mount and when vacation changes
 
   const isPast    = elStatus === "past";
   const isOngoing = elStatus === "ongoing";
