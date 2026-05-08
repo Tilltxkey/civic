@@ -2161,7 +2161,7 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
                 onChange={e => handleTextChange(e.target.value)}
                 onKeyDown={e => {
                   if (e.key === "Escape" && mentionQuery !== null) {
-                    setMentionQuery(null); setMentionResults([]); setAudienceQuery(null); e.stopPropagation();
+                    setMentionQuery(null); setMentionResults([]); e.stopPropagation();
                   }
                 }}
                 placeholder="Quoi de neuf dans vos projets ?"
