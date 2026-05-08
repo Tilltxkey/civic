@@ -177,6 +177,9 @@ export function pollUserStatus(
 }
 
 // ── Posts ─────────────────────────────────────────────────────
+// Required DB migration — run once in Supabase SQL editor:
+//   ALTER TABLE civique_posts ADD COLUMN IF NOT EXISTS audience text NOT NULL DEFAULT 'everyone';
+// Without this column, targeted posts will be visible to everyone.
 
 export interface DBPost {
   id:         string;
@@ -194,7 +197,8 @@ export interface DBPost {
   reposts:    number;
   views:      number;
   comment_count?: number;
-  quoted_post?: string;  // JSON-encoded QuotedPost snapshot for cite-reposts
+  quoted_post?: string;
+  audience?:  string;   // "everyone" | "faculty:X" | "subfield:X:Y" | "class:X:Y:Z" | "classv:X:Y:Z:V"
 }
 
 // ── Realtime subscriptions ────────────────────────────────────
@@ -246,6 +250,105 @@ export async function loadPosts(): Promise<DBPost[]> {
     .limit(50);
   if (error) { console.error("loadPosts:", error.message); return []; }
   return (data ?? []) as DBPost[];
+}
+
+// ── Audience fan-out ──────────────────────────────────────────
+// Called after inserting a targeted post. Queries civique_users for
+// all users matching the audience criteria and pushes a notification
+// to each, so they see the post in their feed via the notif link.
+//
+// audience formats:
+//   faculty:FAC                  → all users with faculty = FAC
+//   subfield:FAC:FieldName       → faculty = FAC AND field = FieldName
+//   class:FAC:FieldName:year     → + year match, non-staff only
+//   classv:FAC:FieldName:yr:Vac  → + vacation match
+
+export async function fanOutAudienceNotifs(
+  postId:    string,
+  audience:  string,
+  authorId:  string,
+  authorName: string,
+): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  if (!audience || audience === "everyone") return;
+
+  // Build the user query based on audience type.
+  // We do NOT exclude the author — if they belong to the targeted audience
+  // (e.g. an FDSE student posting @fdse) they should receive the notification
+  // too. The upsert-ignore on duplicate id handles any edge-case double insert.
+  let query = supabase.from("civique_users").select("id");
+
+  if (audience.startsWith("faculty:")) {
+    const fac = audience.slice("faculty:".length);
+    query = query.eq("faculty", fac);
+
+  } else if (audience.startsWith("subfield:")) {
+    const after  = audience.slice("subfield:".length);
+    const colon  = after.indexOf(":");
+    const fac    = after.slice(0, colon);
+    const field  = after.slice(colon + 1);
+    query = query.eq("faculty", fac).eq("field", field);
+
+  } else if (audience.startsWith("class:")) {
+    const after  = audience.slice("class:".length);
+    const colon1 = after.indexOf(":");
+    const rest1  = after.slice(colon1 + 1);
+    const colon2 = rest1.lastIndexOf(":");
+    const fac    = after.slice(0, colon1);
+    const field  = rest1.slice(0, colon2);
+    const yr     = parseInt(rest1.slice(colon2 + 1), 10);
+    query = query
+      .eq("faculty", fac).eq("field", field).eq("year", yr)
+      .not("role", "in", "(Décanat,Rectorat)");
+
+  } else if (audience.startsWith("classv:")) {
+    const after  = audience.slice("classv:".length);
+    const parts  = after.split(":");
+    const vac    = parts[parts.length - 1]; // "Jour" or "Soir"
+    const yr     = parseInt(parts[parts.length - 2], 10);
+    const fac    = parts[0];
+    const field  = parts.slice(1, parts.length - 2).join(":");
+
+    // All possible spellings stored by registration forms for this session:
+    const vacAliases = vac === "Jour"
+      ? ["Jour", "Matin", "AM", "am", "matin", "jour"]
+      : ["Soir", "PM", "pm", "soir"];
+
+    // Include exact vacation matches OR users with no vacation set
+    const vacFilter = vacAliases.map(v => `vacation.eq.${v}`).join(",");
+    query = query
+      .eq("faculty", fac).eq("field", field).eq("year", yr)
+      .or(`${vacFilter},vacation.is.null,vacation.eq.`)
+      .not("role", "in", "(Décanat,Rectorat)");
+
+  } else {
+    return; // unknown format
+  }
+
+  const { data, error } = await query;
+  if (error) { console.error("fanOutAudienceNotifs query:", error.message); return; }
+  if (!data || data.length === 0) return;
+
+  // Push one notif per matching user
+  const label = audience.startsWith("faculty:") ? "votre faculté"
+    : audience.startsWith("subfield:") ? "votre parcours"
+    : "votre promotion";
+
+  const notifs = data.map((row: { id: string }) => ({
+    id:         `aud_${postId}_${row.id}`,
+    user_id:    row.id,
+    from_id:    authorId,
+    body:       encodeNotifBody(`${authorName} a publié dans ${label}`, postId),
+    type:       "audience",
+    read:       false,
+    created_at: new Date().toISOString(),
+  }));
+
+  // Upsert so a duplicate audience notif (e.g. author re-posting) is silently ignored.
+  const { error: insertErr } = await supabase
+    .from("civique_notifications")
+    .upsert(notifs, { onConflict: "id", ignoreDuplicates: true });
+  if (insertErr) console.error("fanOutAudienceNotifs insert:", insertErr.message);
 }
 
 export async function insertPost(post: DBPost): Promise<void> {
@@ -510,23 +613,41 @@ export interface DBNotif {
   id:         string;
   user_id:    string;
   from_id:    string;
-  body:       string;
+  body:       string;   // may end with  \x00{postId}  to encode the related post
   type:       string;
   read:       boolean;
   created_at: string;
+  post_id?:   string;   // parsed from body suffix — NOT a real column (add migration below to make it one)
 }
 
-/** Push a notification to a user — writes to Supabase so cross-device delivery works. */
+// To add post_id as a real column run:
+//   ALTER TABLE civique_notifications ADD COLUMN IF NOT EXISTS post_id text;
+// Until then, post_id is encoded in body as a NUL-terminated suffix and parsed on read.
+
+/** Encode post_id into a notif body so it survives without a schema change.
+ *  Uses a safe separator that Postgres accepts: "|POST:" */
+function encodeNotifBody(body: string, postId?: string): string {
+  return postId ? `${body}|POST:${postId}` : body;
+}
+/** Parse body — returns { display, postId }. */
+export function parseNotifBody(body: string): { display: string; postId?: string } {
+  const sep = "|POST:";
+  const idx = body.indexOf(sep);
+  if (idx === -1) return { display: body };
+  return { display: body.slice(0, idx), postId: body.slice(idx + sep.length) };
+}
+
+/** Push a notification to a user. */
 export async function pushNotif(
   userId: string,
-  notif: { id: string; body: string; fromId: string; type?: string }
+  notif: { id: string; body: string; fromId: string; type?: string; postId?: string }
 ): Promise<void> {
   if (!DB_READY || !supabase) return;
-  const row: DBNotif = {
+  const row = {
     id:         notif.id,
     user_id:    userId,
     from_id:    notif.fromId,
-    body:       notif.body,
+    body:       encodeNotifBody(notif.body, notif.postId),
     type:       notif.type ?? "mention",
     read:       false,
     created_at: new Date().toISOString(),

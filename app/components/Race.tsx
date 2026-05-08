@@ -565,6 +565,7 @@ export function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: str
   const isPast   = elStatus === "past";
 
   const raceRows = [...POSTS].reverse()
+    
     .filter(p => p.id !== selectedRaceId)
     .map(post => {
       const postCands = candidates

@@ -354,7 +354,7 @@ function AppShell({
 
         {/* Scrollable content */}
         <div id="main-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", background: C.bg }}>
-          {activeTab === "vote" && (
+          {activeTab === "vote" && (!user || (user.year >= 1 && !!user.field)) && (
             <Race votesA={vA} votesB={vB} reporting={rep} selectedRaceId={selectedRaceId} onCardClick={handleCardClick} />
           )}
           {activeTab !== "community" && (

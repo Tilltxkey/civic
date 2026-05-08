@@ -70,55 +70,131 @@ export interface UserProfile {
 }
 
 // ── Academic data ─────────────────────────────────────────────
+// Source: UEH (Université d'État d'Haïti) real faculty/filière structure.
+// FIELD_YEARS maps  faculty → filière → [minYear, maxYear]
+// FIELDS is derived from it for convenience.
 
-const FACULTIES: string[] = [
-  "FDSE – Droit & Sciences Économiques",
-  "FLA – Lettres & Arts",
-  "FST – Sciences & Technologies",
-  "FMP – Médecine & Pharmacie",
-  "FASCH – Sciences Humaines",
-  "FGC – Génie Civil",
-  "FA – Architecture",
-  "FAMV – Agronomie & Médecine Vétérinaire",
-];
+interface FieldMeta { min: number; max: number; }
 
-// 3 roles only — same as the original design
-const ROLES = ["Étudiant·e", "Décanat", "Rectorat"] as const;
-
-// Departments per faculty — shown for Décanat, not for Rectorat or student
-const DEPARTEMENTS: Record<string, string[]> = {
-  "FDSE – Droit & Sciences Économiques": ["Économique", "Juridique", "N/A"],
-  "FLA – Lettres & Arts":                ["Lettres & Linguistique", "Arts & Culture", "Communication", "N/A"],
-  "FST – Sciences & Technologies":       ["Mathématiques & Physique", "Chimie & Biologie", "Informatique", "N/A"],
-  "FMP – Médecine & Pharmacie":          ["Médecine", "Pharmacie", "Stomatologie", "N/A"],
-  "FASCH – Sciences Humaines":           ["Sociologie & Psychologie", "Histoire & Géographie", "Sciences Politiques", "N/A"],
-  "FGC – Génie Civil":                   ["Génie Civil", "Génie Électrique", "Génie Mécanique", "Génie Informatique", "N/A"],
-  "FA – Architecture":                   ["Architecture", "Urbanisme", "N/A"],
-  "FAMV – Agronomie & Médecine Vétérinaire": ["Agronomie", "Médecine Vétérinaire", "Agroéconomie", "N/A"],
+const FIELD_YEARS: Record<string, Record<string, FieldMeta>> = {
+  "FDSE": {
+    "Sciences Économiques":  { min: 1, max: 4 },
+    "Sciences Juridiques":   { min: 1, max: 4 },
+  },
+  "INAGHEI": {
+    "Gestion des Affaires":      { min: 1, max: 4 },
+    "Comptabilité":              { min: 1, max: 4 },
+    "Administration Publique":   { min: 1, max: 4 },
+    "Relations Internationales": { min: 1, max: 4 },
+  },
+  "FDS": {
+    "Génie Civil":        { min: 1, max: 5 },
+    "Électromécanique":   { min: 1, max: 5 },
+    "Électronique":       { min: 1, max: 5 },
+    "Architecture":       { min: 1, max: 5 },
+    "Chimie":             { min: 1, max: 4 },
+    "Topographie":        { min: 1, max: 2 },
+  },
+  "FASCH": {
+    "Sociologie":          { min: 1, max: 4 },
+    "Psychologie":         { min: 1, max: 4 },
+    "Travail Social":      { min: 1, max: 4 },
+    "Communication Sociale": { min: 1, max: 4 },
+  },
+  "FE": {
+    "Psychologie":            { min: 1, max: 4 },
+    "Anthropologie-Sociologie": { min: 1, max: 4 },
+  },
+  "FLA": {
+    "Linguistique Appliquée": { min: 1, max: 4 },
+  },
+  "FAMV": {
+    "Agronomie": { min: 1, max: 5 },
+  },
+  "ENS": {
+    "Mathématiques":    { min: 1, max: 3 },
+    "Physique":         { min: 1, max: 3 },
+    "Philosophie":      { min: 1, max: 3 },
+    "Lettres Modernes": { min: 1, max: 3 },
+    "Sciences Sociales":{ min: 1, max: 3 },
+    "Langues Vivantes": { min: 1, max: 3 },
+  },
+  "CTPEA": {
+    "Économie Appliquée": { min: 1, max: 4 },
+    "Statistique":        { min: 1, max: 4 },
+  },
+  "FMPM": {
+    "Médecine":          { min: 1, max: 7 },
+    "Pharmacie":         { min: 1, max: 4 },
+    "Biologie Médicale": { min: 1, max: 3 },
+  },
+  "FO": {
+    "Odontologie": { min: 1, max: 5 },
+  },
+  "IERAH-ISERSS": {
+    "Histoire":              { min: 1, max: 4 },
+    "Géographie":            { min: 1, max: 4 },
+    "Patrimoine et Tourisme":{ min: 1, max: 4 },
+  },
+  "CHCL": {
+    "Informatique":    { min: 1, max: 4 },
+    "Sciences Infirmières": { min: 1, max: 4 },
+    "Génie Civil":     { min: 1, max: 5 },
+    "Génie Électrique":{ min: 1, max: 5 },
+    "Génie Mécanique": { min: 1, max: 5 },
+    "Agronomie":       { min: 1, max: 5 },
+  },
+  "EDEG": {
+    "Sciences Juridiques":  { min: 1, max: 4 },
+    "Sciences Économiques": { min: 1, max: 4 },
+  },
+  "EDEC": {
+    "Sciences Juridiques":  { min: 1, max: 4 },
+    "Sciences Économiques": { min: 1, max: 4 },
+  },
+  "EDEJ": {
+    "Sciences Juridiques":  { min: 1, max: 4 },
+    "Sciences Économiques": { min: 1, max: 4 },
+  },
+  "EDEHP": {
+    "Sciences Juridiques":  { min: 1, max: 4 },
+    "Sciences Économiques": { min: 1, max: 4 },
+  },
+  "EDEH": {
+    "Sciences Juridiques":  { min: 1, max: 4 },
+    "Sciences Économiques": { min: 1, max: 4 },
+  },
+  "EDEFL": {
+    "Sciences Juridiques":  { min: 1, max: 4 },
+    "Sciences Économiques": { min: 1, max: 4 },
+  },
 };
 
-const FIELDS: Record<string, string[]> = {
-  "FDSE – Droit & Sciences Économiques": [
-    "Sciences Économiques", "Droit Privé", "Droit Public",
-    "Gestion des Entreprises", "Finance & Comptabilité", "Commerce International",
-  ],
-  "FLA – Lettres & Arts": [
-    "Lettres Modernes", "Langues Étrangères Appliquées",
-    "Arts Plastiques", "Communication & Journalisme",
-  ],
-  "FST – Sciences & Technologies": ["Mathématiques", "Physique", "Chimie", "Informatique", "Biologie"],
-  "FMP – Médecine & Pharmacie":    ["Médecine Générale", "Pharmacie", "Stomatologie"],
-  "FASCH – Sciences Humaines":     ["Sociologie", "Psychologie", "Histoire & Géographie", "Philosophie", "Sciences Politiques"],
-  "FGC – Génie Civil":             ["Génie Civil", "Génie Électrique", "Génie Mécanique", "Génie Informatique"],
-  "FA – Architecture":             ["Architecture", "Urbanisme & Aménagement"],
-  "FAMV – Agronomie & Médecine Vétérinaire": ["Agronomie", "Médecine Vétérinaire", "Agroéconomie"],
-};
+// Derived flat lists
+const FACULTIES: string[] = Object.keys(FIELD_YEARS);
+
+const FIELDS: Record<string, string[]> = Object.fromEntries(
+  Object.entries(FIELD_YEARS).map(([fac, fields]) => [fac, Object.keys(fields)])
+);
+
+// Helper: get year range for a given faculty + field (falls back to 1–5)
+function getYearRange(faculty: string, field: string): FieldMeta {
+  return FIELD_YEARS[faculty]?.[field] ?? { min: 1, max: 5 };
+}
+
+// Departments per faculty — shown for Décanat only
+const DEPARTEMENTS: Record<string, string[]> = Object.fromEntries(
+  Object.entries(FIELDS).map(([fac, fields]) => [fac, [...fields, "N/A"]])
+);
 
 const VACATIONS = ["Jour", "Soir"] as const;
 
-const DEFAULT_FACULTY = "FDSE – Droit & Sciences Économiques";
+const DEFAULT_FACULTY = "FDSE";
 const DEFAULT_FIELD   = "Sciences Économiques";
-const DEFAULT_DEPT    = "Économique";
+const DEFAULT_DEPT    = "Sciences Économiques";
+
+// 3 roles only — same as the original design
+const ROLES = ["Étudiant·e", "Décanat", "Rectorat", "N/A"] as const;
 
 const DECANAT_FONCTIONS  = ["Doyen·ne", "Vice-doyen·ne", "Secrétaire", "Autre"] as const;
 const RECTORAT_FONCTIONS = ["Recteur·e", "Vice-recteur·e", "Secrétaire général·e", "Autre"] as const;
@@ -1126,15 +1202,17 @@ function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: St
   const [errors, setErrors]     = useState<Partial<Record<keyof Step1Data, boolean>>>({});
   const [dupError, setDupError] = useState("");
   const [dupChecking, setDupChecking] = useState(false);
+  // Tracks whether user selected "Autre" in the fonction dropdown
+  // Separate from fonctionDetail so typing doesn't flip the input back
+  const [autreFonction, setAutreFonction] = useState(false);
 
   const isStudent  = d.role === STUDENT_ROLE;
   const isDecanat  = d.role === DECANAT_ROLE;
   const isRectorat = d.role === RECTORAT_ROLE;
 
-  // For Décanat: only Doyen hides département
-  const isDoyen       = isDecanat && d.fonctionDetail === "Doyen·ne";
-  const decanatAutre  = isDecanat  && d.fonctionDetail === "Autre";
-  const rectoratAutre = isRectorat && d.fonctionDetail === "Autre";
+  const isDoyen       = isDecanat && !autreFonction && d.fonctionDetail === "Doyen·ne";
+  const decanatAutre  = isDecanat  && autreFonction;
+  const rectoratAutre = isRectorat && autreFonction;
 
   const set = (k: keyof Step1Data, v: string) => {
     setD(prev => {
@@ -1147,20 +1225,23 @@ function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: St
           next.departement    = DEFAULT_DEPT;
           next.field          = DEFAULT_FIELD;
           next.year           = "";
+          setAutreFonction(false);
         } else if (v === DECANAT_ROLE) {
-          next.fonctionDetail = "Doyen·ne";   // default
+          next.fonctionDetail = "Doyen·ne";
           next.faculty        = DEFAULT_FACULTY;
-          next.departement    = "";           // doyen = no dept by default
+          next.departement    = "";
           next.field          = "";
           next.matricule      = "";
           next.year           = "";
+          setAutreFonction(false);
         } else if (v === RECTORAT_ROLE) {
-          next.fonctionDetail = "Recteur·e";  // default
+          next.fonctionDetail = "Recteur·e";
           next.faculty        = "";
           next.departement    = "";
           next.field          = "";
           next.matricule      = "";
           next.year           = "";
+          setAutreFonction(false);
         }
       }
       if (k === "fonctionDetail") {
@@ -1176,6 +1257,10 @@ function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: St
       if (k === "faculty") {
         next.departement = DEFAULT_DEPT in (DEPARTEMENTS[v] ?? []) ? DEFAULT_DEPT : (DEPARTEMENTS[v]?.[0] ?? "");
         next.field       = FIELDS[v]?.[0] ?? "";
+        next.year        = ""; // reset — new field may have different range
+      }
+      if (k === "field") {
+        next.year = ""; // reset when filière changes
       }
       return next;
     });
@@ -1199,7 +1284,8 @@ function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: St
       if (!d.faculty)                              e.faculty   = true;
       if (!d.field)                                e.field     = true;
       if (!d.matricule.trim())                     e.matricule = true;
-      if (!d.year || +d.year < 1 || +d.year > 7)  e.year      = true;
+      const yr = getYearRange(d.faculty, d.field);
+      if (!d.year || +d.year < yr.min || +d.year > yr.max) e.year = true;
       if (!d.vacation)                             e.vacation  = true;
     }
     setErrors(e);
@@ -1272,7 +1358,19 @@ function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: St
                   autoFocus
                 />
               ) : (
-                <StyledSelect value={d.fonctionDetail} onChange={v => set("fonctionDetail", v)} error={errors.fonctionDetail}>
+                <StyledSelect
+                  value={d.fonctionDetail}
+                  onChange={v => {
+                    if (v === "Autre") {
+                      setAutreFonction(true);
+                      set("fonctionDetail", "");
+                    } else {
+                      setAutreFonction(false);
+                      set("fonctionDetail", v);
+                    }
+                  }}
+                  error={errors.fonctionDetail}
+                >
                   {DECANAT_FONCTIONS.map(f => <option key={f} value={f}>{f}</option>)}
                 </StyledSelect>
               )}
@@ -1339,7 +1437,19 @@ function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: St
                 autoFocus
               />
             ) : (
-              <StyledSelect value={d.fonctionDetail} onChange={v => set("fonctionDetail", v)} error={errors.fonctionDetail}>
+              <StyledSelect
+                value={d.fonctionDetail}
+                onChange={v => {
+                  if (v === "Autre") {
+                    setAutreFonction(true);
+                    set("fonctionDetail", "");
+                  } else {
+                    setAutreFonction(false);
+                    set("fonctionDetail", v);
+                  }
+                }}
+                error={errors.fonctionDetail}
+              >
                 {RECTORAT_FONCTIONS.map(f => <option key={f} value={f}>{f}</option>)}
               </StyledSelect>
             )}
@@ -1379,14 +1489,15 @@ function Step1Screen({ onBack, onNext }: { onBack: () => void; onNext: (data: St
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
               <div>
-                <Label>Année (1–7) *</Label>
+                <Label>Année ({getYearRange(d.faculty, d.field).min}–{getYearRange(d.faculty, d.field).max}) *</Label>
                 <StyledInput
                   value={d.year}
                   onChange={e => {
                     const v = e.target.value.replace(/\D/g, "");
-                    if (v === "" || (+v >= 1 && +v <= 7)) set("year", v);
+                    const { min, max } = getYearRange(d.faculty, d.field);
+                    if (v === "" || (+v >= min && +v <= max)) set("year", v);
                   }}
-                  placeholder="ex : 3"
+                  placeholder={`ex : ${getYearRange(d.faculty, d.field).min}`}
                   inputMode="numeric"
                   maxLength={1}
                   error={errors.year}

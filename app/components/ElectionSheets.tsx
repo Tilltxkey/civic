@@ -695,7 +695,9 @@ export function CandidacySheet({ user, onClose, onGoToComm, onBadgeGranted }: Ca
 
   if (!election || election.status !== "inscription") return null;
 
-  const openPosts = POSTS.filter(p => election.openPosts.includes(p.id));
+  const openPosts = [...POSTS]
+    .sort((a, b) => b.importance - a.importance)
+    .filter(p => election.openPosts.includes(p.id));
 
   const handleSubmit = async () => {
     if (!selectedPost) return;

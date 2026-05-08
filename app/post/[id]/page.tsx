@@ -71,7 +71,7 @@ async function buildMeta(post: PostRow | null, id: string) {
   if (!post) {
     return {
       title: "Civic",
-      desc:  "Le réseau étudiant",
+      desc:  "Le Campus étudiant",
       image: `${BASE}/og-default.png`,
       url:   `${BASE}/post/${id}`,
     };

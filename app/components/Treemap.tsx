@@ -28,6 +28,7 @@ import { useElection, POSTS, isCEPRole, type PostId } from "./ElectionContext";
 import { candidateColor, ConvergingBar } from "./Race";
 import type { UserProfile } from "./AuthFlow";
 import { InscriptionSheet, LaunchElectionSheet, CandidacySheet, RealVoteSheet, ResetElectionSheet } from "./ElectionSheets";
+import { FacultyOverview } from "./FacultyOverview";
 import { supabase } from "./supabase";
 
 // How long (ms) the "success" sheet stays before auto-dismiss
@@ -493,7 +494,8 @@ function AllRaces({ selectedRaceId, onSelectRace }: { selectedRaceId: string; on
   const totalEligible = (categorySexCounts.M + categorySexCounts.F) || 1;
 
   // Build per-post real data from DB — supports unlimited candidates
-  const raceRows = POSTS
+  const raceRows = [...POSTS]
+    .sort((a, b) => b.importance - a.importance)
     .filter(p => p.id !== selectedRaceId)
     .map(post => {
       const postCands = candidates
@@ -1703,8 +1705,13 @@ export default function Treemap({
       {/* ── TAB: Thèses ── */}
       {activeTab === "results" && <ThesesTab onTabChange={onTabChange} onOpenThesis={onOpenThesis} />}
 
-      {/* ── TAB: Voter ── */}
-      {activeTab === "vote" && (
+      {/* ── TAB: Voter — faculty overview for Décanat/Rectorat ── */}
+      {activeTab === "vote" && currentUser && (currentUser.year === 0 || !currentUser.field) && (
+        <FacultyOverview user={currentUser} />
+      )}
+
+      {/* ── TAB: Voter — normal student view ── */}
+      {activeTab === "vote" && (!currentUser || (currentUser.year >= 1 && !!currentUser.field)) && (
         <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px 12px" }}>
 
           <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: C.sub, marginTop: 5, marginBottom: 10 }}>
@@ -1978,8 +1985,10 @@ export default function Treemap({
         </div>
       )}
 
-      {/* ── All races (vote tab only) ── */}
-      {activeTab === "vote" && <AllRaces selectedRaceId={selectedRaceId} onSelectRace={onSelectRace} />}
+      {/* ── All races (vote tab, students only) ── */}
+      {activeTab === "vote" && (!currentUser || (currentUser.year >= 1 && !!currentUser.field)) && (
+        <AllRaces selectedRaceId={selectedRaceId} onSelectRace={onSelectRace} />
+      )}
 
       {/* ── CEP Sheets ── */}
       {cepSheet === "inscription" && (

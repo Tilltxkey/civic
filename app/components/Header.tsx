@@ -6,15 +6,44 @@ import { ELECTION } from "./data";
 import { AppMenu } from "./AppMenu";
 import { useElection } from "./ElectionContext";
 
+// ── Derive the header subtitle from the user's profile ────────
+// • Student  (year ≥ 1, field set)  → "3ème année · Sciences Économiques"
+// • Décanat  (role starts with Décanat, roleDetail set) → "FDSE · Doyen·ne"
+// • Rectorat                         → "Rectorat · UEH"
+// • Fallback                         → faculty only, or empty
+function buildSubtitle(user?: import("./AuthFlow").UserProfile | null): string {
+  if (!user) return "";
+
+  const isStudent  = user.year >= 1 && !!user.field;
+  const isDecanat  = user.role === "Décanat";
+  const isRectorat = user.role === "Rectorat";
+
+  if (isStudent) {
+    const suffix =
+      user.year === 1 ? "1ère année" :
+      `${user.year}ème année`;
+    return `${suffix} · ${user.field}`;
+  }
+
+  if (isDecanat) {
+    const parts = [user.faculty, user.roleDetail].filter(Boolean);
+    return parts.join(" · ");
+  }
+
+  if (isRectorat) {
+    return `Rectorat · UEH`;
+  }
+
+  // CEP or other roles — show faculty if available
+  return user.faculty || "";
+}
+
 export default function Header({ user }: { user?: import("./AuthFlow").UserProfile | null }) {
   const C = useC();
   const { election, inscriptionSecsLeft } = useElection();
   const status = election?.status ?? "future";
 
   // ── Track whether the inscription window has closed ────────────
-  // Derived client-side: inscription is "closed" when the timer was
-  // set (inscriptionEndsAt exists) and has now reached zero.
-  // We do NOT add a new DB status — this is purely a display state.
   const [inscriptionClosed, setInscriptionClosed] = useState(false);
 
   useEffect(() => {
@@ -22,7 +51,6 @@ export default function Header({ user }: { user?: import("./AuthFlow").UserProfi
       setInscriptionClosed(false);
       return;
     }
-    // If no timer was set, never close
     if (!election?.inscriptionEndsAt) return;
 
     const update = () => {
@@ -59,6 +87,8 @@ export default function Header({ user }: { user?: import("./AuthFlow").UserProfi
   const isLive   = status === "ongoing";
   const isPulse  = status === "inscription" && !inscriptionClosed;
 
+  const subtitle = buildSubtitle(user);
+
   return (
     <header style={{
       background: C.surface,
@@ -94,9 +124,11 @@ export default function Header({ user }: { user?: import("./AuthFlow").UserProfi
         }}>
           {STATUS_TITLE[displayStatus]}
         </div>
-        <div style={{ fontSize: 13, color: C.sub, marginTop: 2 }}>
-          {ELECTION.grade} · {ELECTION.field}
-        </div>
+        {subtitle && (
+          <div style={{ fontSize: 13, color: C.sub, marginTop: 2 }}>
+            {subtitle}
+          </div>
+        )}
       </div>
 
       <AppMenu user={user} />

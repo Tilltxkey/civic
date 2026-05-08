@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import ReactDOM from "react-dom";
 import type { UserProfile } from "./AuthFlow";
-import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushNotif, loadNotifs, deleteNotif, clearAllNotifs, subscribeNotifs, type DBPost, type DBComment, type DBNotif } from "./db";
+import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushNotif, parseNotifBody, fanOutAudienceNotifs, loadNotifs, deleteNotif, clearAllNotifs, subscribeNotifs, type DBPost, type DBComment, type DBNotif } from "./db";
 import { MessagesScreen } from "./MessagesTab";
 import { useC } from "./tokens";
 import { useLang } from "./LangContext";
@@ -58,7 +58,7 @@ interface Post {
   comments:     Comment[];
   showComments: boolean;
   quotedPost?:  QuotedPost;  // set when this post is a "Citer" quote-repost
-  audience:     "everyone" | `field:${string}` | `subfield:${string}` | `class:${string}`;
+  audience:     "everyone" | `faculty:${string}` | `field:${string}` | `subfield:${string}` | `class:${string}` | `classv:${string}`;
 }
 
 function maxChars(badge: Author["badge"]): number {
@@ -145,35 +145,65 @@ function parseTag(tag: string): { facultyCode: string; year: number | null } {
   return { facultyCode: codeOnly ? codeOnly[1].toLowerCase() : "", year: null };
 }
 
-// Map full faculty names (UserProfile.faculty) → short codes used in tags
-const FACULTY_CODE: Record<string, string> = {
-  "FDSE – Droit & Sciences Économiques": "eco",   // shared code for the faculty
-  "FLA – Lettres & Arts":                "fla",
-  "FST – Sciences & Technologies":       "fst",
-  "FMP – Médecine & Pharmacie":          "fmp",
-  "FASCH – Sciences Humaines":           "fasch",
-  "FGC – Génie Civil":                   "fgc",
-  "FA – Architecture":                   "fa",
-  "FAMV – Agronomie & Médecine Vétérinaire": "famv",
+// Map filière names (UserProfile.field) → short tag codes
+// Used by categoryMultiplier to compare viewer's filière with post author's tag
+const FIELD_CODE: Record<string, string> = {
+  "Sciences Économiques":      "eco",
+  "Sciences Juridiques":       "droit",
+  "Gestion des Affaires":      "ges",
+  "Comptabilité":              "cpt",
+  "Administration Publique":   "adm",
+  "Relations Internationales": "rin",
+  "Génie Civil":               "gc",
+  "Électromécanique":          "em",
+  "Électronique":              "en",
+  "Architecture":              "arc",
+  "Chimie":                    "chi",
+  "Topographie":               "topo",
+  "Sociologie":                "soc",
+  "Psychologie":               "psy",
+  "Travail Social":            "tso",
+  "Communication Sociale":     "com",
+  "Anthropologie-Sociologie":  "aso",
+  "Linguistique Appliquée":    "ling",
+  "Agronomie":                 "agro",
+  "Mathématiques":             "math",
+  "Physique":                  "phy",
+  "Philosophie":               "philo",
+  "Lettres Modernes":          "let",
+  "Sciences Sociales":         "sso",
+  "Langues Vivantes":          "lan",
+  "Économie Appliquée":        "eap",
+  "Statistique":               "stat",
+  "Médecine":                  "med",
+  "Pharmacie":                 "pha",
+  "Biologie Médicale":         "bim",
+  "Odontologie":               "odo",
+  "Histoire":                  "his",
+  "Géographie":                "geo",
+  "Patrimoine et Tourisme":    "tou",
+  "Informatique":              "inf",
+  "Sciences Infirmières":      "infir",
+  "Génie Électrique":          "gel",
+  "Génie Mécanique":           "gem",
 };
 
-// Category multiplier: how relevant is this post to the viewing user?
+// Reverse map: field code → full filière name (for @-mention audience parsing)
+
 function categoryMultiplier(
-  postTag:     string,
-  viewerFaculty: string,
-  viewerYear:    number,
+  postTag:    string,
+  viewerField: string,
+  viewerYear:  number,
 ): number {
   const { facultyCode: pCode, year: pYear } = parseTag(postTag);
-  const vCode = FACULTY_CODE[viewerFaculty] ?? viewerFaculty.toLowerCase().slice(0, 4);
+  const vCode = FIELD_CODE[viewerField] ?? viewerField.toLowerCase().slice(0, 4);
 
-  const sameField   = pCode === vCode;
-  const sameYear    = pYear !== null && pYear === viewerYear;
+  const sameField = pCode === vCode;
+  const sameYear  = pYear !== null && pYear === viewerYear;
 
-  if (sameField && sameYear) return 3.0;   // Exact match: same class + same field
-  if (sameField)             return 2.0;   // Same field, different year
-  return 1.0;                              // Different field — no boost
-  // Note: "college match" (1.5×) is implicit since all users are in the same
-  // college (FDSE). If multi-college support is added, check faculty prefix here.
+  if (sameField && sameYear) return 3.0;  // Same filière + same year
+  if (sameField)             return 2.0;  // Same filière, different year
+  return 1.0;                             // Different filière
 }
 
 // Engagement score: weighted sum of interactions
@@ -205,17 +235,16 @@ function isViral(post: Post): boolean {
 // those posts lose their Wu boost and are ranked like regular posts (Wu=1)
 // so they don't stack at the top of the feed once they've been seen.
 function priorityScore(
-  post:          Post,
-  viewerFaculty: string,
-  viewerYear:    number,
-  seenGrayIds:   Set<string>,
+  post:        Post,
+  viewerField: string,
+  viewerYear:  number,
+  seenGrayIds: Set<string>,
 ): number {
   const rawBadge = post.author.badge ?? "none";
-  // Once a gray post is seen it is demoted to the baseline weight (1)
   const effectiveBadge =
     rawBadge === "gray" && seenGrayIds.has(post.id) ? "none" : rawBadge;
   const Wu  = BADGE_WEIGHT[effectiveBadge] ?? 1;
-  const Mc  = categoryMultiplier(post.author.tag, viewerFaculty, viewerYear);
+  const Mc  = categoryMultiplier(post.author.tag, viewerField, viewerYear);
   const E   = engagementScore(post);
   const T   = hoursSince(post.createdAt);
   return (Wu * Mc + E) / Math.pow(T, GRAVITY);
@@ -231,18 +260,17 @@ function priorityScore(
 // gray post is always injected at position 0 in the final feed
 // (capped at one per 12-hour window via sessionStorage).
 function rankFeed(
-  posts:         Post[],
-  viewerFaculty: string,
-  viewerYear:    number,
-  seenGrayIds:   Set<string>,
+  posts:       Post[],
+  viewerField: string,
+  viewerYear:  number,
+  seenGrayIds: Set<string>,
 ): Post[] {
   if (posts.length === 0) return [];
 
-  // Score every post once
   const scored = posts.map(p => ({
     post:  p,
-    score: priorityScore(p, viewerFaculty, viewerYear, seenGrayIds),
-    Mc:    categoryMultiplier(p.author.tag, viewerFaculty, viewerYear),
+    score: priorityScore(p, viewerField, viewerYear, seenGrayIds),
+    Mc:    categoryMultiplier(p.author.tag, viewerField, viewerYear),
     viral: isViral(p),
   }));
 
@@ -327,11 +355,11 @@ function rankFeed(
 }
 
 // ── Viewer context helper — safe defaults when UserProfile is missing
-interface ViewerCtx { faculty: string; year: number }
+interface ViewerCtx { field: string; year: number }
 function viewerCtx(user: UserProfile | undefined | null): ViewerCtx {
   return {
-    faculty: user?.faculty ?? "",
-    year:    user?.year    ?? 1,
+    field: user?.field ?? "",
+    year:  user?.year  ?? 1,
   };
 }
 
@@ -414,7 +442,13 @@ function VerifiedBadge({ type, size = 15 }: { type: "gold" | "blue" | "gray"; si
 
 // ── AudienceSheet — bottom sheet for post visibility ─────────
 
-type AudienceValue = "everyone" | `field:${string}` | `subfield:${string}` | `class:${string}`;
+type AudienceValue =
+  | "everyone"
+  | `faculty:${string}`    // 3 — ma faculté (all students in same entity, e.g. FDSE)
+  | `field:${string}`      // 2 — ma filière (same filière code across all entities)
+  | `subfield:${string}`   // 4 — mon parcours (same filière inside same faculty)
+  | `class:${string}`      // 5 — ma promotion (same filière + year inside same faculty)
+  | `classv:${string}`;    // 5b — ma promotion + vacation (AM/SOIR) via @ directive
 
 interface AudienceOption {
   value: AudienceValue;
@@ -504,80 +538,119 @@ function AudienceSheet({ current, options, onPick, onClose }: {
 
 // ── Build audience options from author tag ────────────────────
 
-function buildAudienceOptions(me: Author, userField?: string): AudienceOption[] {
-  const { facultyCode, year } = parseTag(me.tag);
-  const opts: AudienceOption[] = [
-    {
-      value:    "everyone",
-      label:    "Tout le monde",
-      sublabel: "Visible par tous les étudiants",
-      icon: (sel) => (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke={sel ? "#fff" : "#888"} strokeWidth="1.8"/>
-          <path d="M12 3c0 0-3.5 4-3.5 9s3.5 9 3.5 9M12 3c0 0 3.5 4 3.5 9s-3.5 9-3.5 9" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
-          <path d="M3 12h18" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-  ];
-  if (facultyCode) {
-    const FACULTY_LABELS: Record<string, string> = {
-      eco: "FDSE – Droit & Éco", fla: "FLA – Lettres & Arts",
-      fst: "FST – Sciences", fmp: "FMP – Médecine",
-      fasch: "FASCH – Sc. Humaines", fgc: "FGC – Génie Civil",
-      fa: "FA – Architecture", famv: "FAMV – Agronomie",
-    };
-    const fLabel = FACULTY_LABELS[facultyCode] ?? facultyCode.toUpperCase();
+function buildAudienceOptions(
+  me: Author,
+  userField?: string,   // u.field  e.g. "Sciences Économiques"
+  userFaculty?: string, // u.faculty e.g. "FDSE"
+  userRole?: string,    // u.role   e.g. "Étudiant·e" | "Décanat" | "Rectorat"
+  userYear?: number,
+): AudienceOption[] {
+  // ── Icon helpers ─────────────────────────────────────────────
+  const globeIcon = (sel: boolean) => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="9" stroke={sel ? "#fff" : "#888"} strokeWidth="1.8"/>
+      <path d="M12 3c0 0-3.5 4-3.5 9s3.5 9 3.5 9M12 3c0 0 3.5 4 3.5 9s-3.5 9-3.5 9" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M3 12h18" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  );
+  const buildingIcon = (sel: boolean) => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <rect x="3" y="3" width="18" height="18" rx="2" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7"/>
+      <path d="M3 9h18M9 9v12" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  );
+  const stackIcon = (sel: boolean) => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+      <path d="M2 12l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+      <path d="M2 16l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+    </svg>
+  );
+  const bookIcon = (sel: boolean) => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
+    </svg>
+  );
+  const groupIcon = (sel: boolean) => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
+      <circle cx="9" cy="7" r="4" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7"/>
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
+    </svg>
+  );
 
-    // ── Option 2: full faculty ─────────────────────────────────
+  // ── Option 1 — always available ───────────────────────────────
+  const opts: AudienceOption[] = [{
+    value:    "everyone",
+    label:    "Tout le monde",
+    sublabel: "Visible par tous",
+    icon:     globeIcon,
+  }];
+
+  // Rectorat: only "everyone"
+  if (userRole === "Rectorat") return opts;
+
+  const fac   = userFaculty ?? "";
+  const field = userField   ?? "";
+  const yr    = userYear    ?? 1;
+
+  // ── Décanat: role-specific scoping ──────────────────────────
+  if (userRole === "Décanat") {
+    const fn = (fac && field) ? "" : ""; // roleDetail not passed here but fac/field are
+    const isDoyen = !field; // Doyen has no specific field (oversees full faculty)
+
+    if (fac) {
+      // All Décanat members can post to their whole faculty
+      opts.push({
+        value:    `faculty:${fac}` as AudienceValue,
+        label:    `Ma faculté · ${fac}`,
+        sublabel: `Tous les étudiants de ${fac}`,
+        icon:     buildingIcon,
+      });
+    }
+    // Vice-doyen + Secrétaire: also offer their specific département (field)
+    if (fac && field) {
+      const code = (FIELD_CODE[field] ?? field).toUpperCase();
+      opts.push({
+        value:    `subfield:${fac}:${field}` as AudienceValue,
+        label:    `Mon département · ${code} · ${fac}`,
+        sublabel: `Étudiants de ${field} à ${fac}`,
+        icon:     bookIcon,
+      });
+    }
+    return opts;
+  }
+
+  // ── Étudiant / autres ───────────────────────────────────────
+  // 3 — Ma faculté
+  if (fac) {
     opts.push({
-      value:    `field:${facultyCode}` as AudienceValue,
-      label:    `Ma filière · ${fLabel}`,
-      sublabel: `Étudiants de ${fLabel} uniquement`,
-      icon: (sel) => (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
-          <path d="M2 12l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
-          <path d="M2 16l10 5 10-5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
-        </svg>
-      ),
+      value:    `faculty:${fac}` as AudienceValue,
+      label:    `Ma faculté · ${fac}`,
+      sublabel: `Tous les étudiants de ${fac}`,
+      icon:     buildingIcon,
     });
-
-    // ── Option 3: sub-field / parcours (e.g. "Jurisprudence", "Sciences Éco") ──
-    if (userField && userField.trim()) {
-      const subfieldKey = userField.trim().toLowerCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-        .replace(/[\s/\-]+/g, "_");
-      opts.push({
-        value:    `subfield:${subfieldKey}` as AudienceValue,
-        label:    `Mon parcours · ${userField.trim()}`,
-        sublabel: `Étudiants en ${userField.trim()} uniquement`,
-        icon: (sel) => (
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinejoin="round"/>
-            <path d="M9 7h7M9 11h5" stroke={sel ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
-        ),
-      });
-    }
-
-    // ── Option 4: year/class ───────────────────────────────────
-    if (year !== null) {
-      opts.push({
-        value:    `class:${facultyCode}.${year}` as AudienceValue,
-        label:    `Ma promotion · ${facultyCode.toUpperCase()} ${year}ᵉ année`,
-        sublabel: `Votre promotion uniquement`,
-        icon: (sel) => (
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
-            <circle cx="9" cy="7" r="4" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7"/>
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
-            <path d="M16 3.13a4 4 0 0 1 0 7.75" stroke={sel ? "#fff" : "#888"} strokeWidth="1.7" strokeLinecap="round"/>
-          </svg>
-        ),
-      });
-    }
+  }
+  // 4 — Mon parcours
+  if (fac && field) {
+    const code = (FIELD_CODE[field] ?? field).toUpperCase();
+    opts.push({
+      value:    `subfield:${fac}:${field}` as AudienceValue,
+      label:    `Mon parcours · ${code} · ${fac}`,
+      sublabel: `Étudiants en ${field} à ${fac}`,
+      icon:     bookIcon,
+    });
+  }
+  // 5 — Ma promotion
+  if (fac && field && yr) {
+    const code = (FIELD_CODE[field] ?? field).toUpperCase();
+    opts.push({
+      value:    `class:${fac}:${field}:${yr}` as AudienceValue,
+      label:    `Ma promo · ${code}${yr} · ${fac}`,
+      sublabel: `Vos collègues de promotion à ${fac}`,
+      icon:     groupIcon,
+    });
   }
   return opts;
 }
@@ -586,36 +659,37 @@ function buildAudienceOptions(me: Author, userField?: string): AudienceOption[] 
 
 function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnType<typeof useC> }) {
   if (!audience || audience === "everyone") return null;
-  const isField    = audience.startsWith("field:");
-  const isSubfield = audience.startsWith("subfield:");
-  const isClass    = audience.startsWith("class:");
 
   let label = "";
   let icon: React.ReactNode = null;
 
-  if (isField) {
-    label = `Filière · ${audience.replace("field:", "").toUpperCase()}`;
+  if (audience.startsWith("faculty:")) {
+    const fac = audience.slice("faculty:".length);
+    label = `Faculté · ${fac}`;
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
-        <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
-        <path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke={C.gold} strokeWidth="2.2"/>
+        <path d="M3 9h18M9 9v12" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/>
       </svg>
     );
-  } else if (isSubfield) {
-    // subfield key is normalised — display as-is capitalised
-    const raw = audience.replace("subfield:", "").replace(/_/g, " ");
-    const display = raw.charAt(0).toUpperCase() + raw.slice(1);
-    label = `Parcours · ${display}`;
+  } else if (audience.startsWith("subfield:")) {
+    // format: subfield:FAC:Filière Name
+    const parts = audience.split(":");
+    const field = parts.slice(2).join(":"); // safe if field name has colons
+    label = `Parcours · ${field}`;
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
         <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
         <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
       </svg>
     );
-  } else if (isClass) {
-    const part = audience.replace("class:", "");
-    const [code, yr] = part.split(".");
-    label = `Promo · ${code.toUpperCase()} ${yr}ᵉ an`;
+  } else if (audience.startsWith("class:")) {
+    // format: class:FAC:Filière Name:year  →  ECO2 · FDSE
+    const parts = audience.split(":");
+    const yr    = parts[parts.length - 1];
+    const fieldName = parts.slice(2, parts.length - 1).join(":");
+    const codeC  = (FIELD_CODE[fieldName] ?? fieldName).toUpperCase();
+    label = `${codeC}${yr} · ${parts[1]}`;
     icon = (
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
         <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
@@ -623,7 +697,35 @@ function AudienceBadge({ audience, C }: { audience: Post["audience"]; C: ReturnT
         <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
       </svg>
     );
+  } else if (audience.startsWith("classv:")) {
+    // format: classv:FAC:Filière:year:Jour|Soir  →  ECO2AM · FDSE
+    const parts = audience.split(":");
+    const vac   = parts[parts.length - 1];
+    const yr    = parts[parts.length - 2];
+    const fieldName = parts.slice(2, parts.length - 2).join(":");
+    const codeV  = (FIELD_CODE[fieldName] ?? fieldName).toUpperCase();
+    const vacLabel = vac === "Jour" ? "AM" : "PM";
+    label = `${codeV}${yr}${vacLabel} · ${parts[1]}`;
+    icon = (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
+        <circle cx="9" cy="7" r="4" stroke={C.gold} strokeWidth="2.2"/>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2.2" strokeLinecap="round"/>
+      </svg>
+    );
+  } else if (audience.startsWith("field:")) {
+    // Legacy format — kept for old posts
+    const legacyCode = audience.slice("field:".length).toUpperCase();
+    label = `Filière · ${legacyCode}`;
+    icon = (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+        <path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+        <path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2.2" strokeLinejoin="round"/>
+      </svg>
+    );
   }
+
+  if (!label) return null;
 
   return (
     <span style={{
@@ -1466,7 +1568,7 @@ function PostDetailScreen({ post, onClose, onComment, onLike, onRepost, me, prof
 
 // ── PostCard ──────────────────────────────────────────────────
 
-function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView, me, profilePic = null, photoCache = {}, userId = "", knownHandles = new Set<string>() }: {
+function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView, me, profilePic = null, photoCache = {}, userId = "", knownHandles = new Set<string>(), autoOpen = false, onAutoOpenConsumed }: {
   post:        Post;
   onLike:      () => void;
   onRepost:    (kind?: "simple" | "quote", quoteText?: string, quoteImgs?: string[]) => void;
@@ -1479,6 +1581,8 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
   photoCache?: Record<string, string>;
   userId?:     string;
   knownHandles?: Set<string>;
+  autoOpen?:   boolean;                // true = open detail immediately (from notif)
+  onAutoOpenConsumed?: () => void;     // called after auto-open so parent clears the flag
 }) {
   const C = useC();
   const { profilePic: ctxPic, user: ctxUser } = useProfile();
@@ -1493,6 +1597,16 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
   const [showQuotedDetail,    setShowQuotedDetail]    = useState(false);
   const [likeAnimKey,         setLikeAnimKey]         = useState(0);
   const [likeAnimActive,      setLikeAnimActive]      = useState(false);
+
+  // Auto-open detail when notif navigation targets this post
+  useEffect(() => {
+    if (autoOpen && !showDetail) {
+      setShowDetail(true);
+      onView();
+      onAutoOpenConsumed?.();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen]);
 
   const handleLike = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1809,7 +1923,7 @@ function InlineCompose({ me, profilePic = null, onPost }: {
   );
 }
 
-function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "", userField = "" }: { onClose: () => void; onPost: (text: string, imgs?: string[], audience?: AudienceValue, knownIds?: Map<string, string>) => void; me: Author; profilePic?: string | null; initialText?: string; userField?: string }) {
+function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = "", userField = "", userFaculty = "", userRole = "", userYear = 1 }: { onClose: () => void; onPost: (text: string, imgs?: string[], audience?: AudienceValue, knownIds?: Map<string, string>) => void; me: Author; profilePic?: string | null; initialText?: string; userField?: string; userFaculty?: string; userRole?: string; userYear?: number }) {
   const C = useC();
   const { profilePic: ctxPic, user: ctxUser } = useProfile();
   const livePic = ctxPic ?? profilePic;
@@ -1818,7 +1932,7 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
   const [showStickers, setShowStickers] = useState(false);
   const [audience, setAudience]       = useState<AudienceValue>("everyone");
   const [showAudience, setShowAudience] = useState(false);
-  const audienceOptions               = buildAudienceOptions(me, userField);
+  const audienceOptions               = buildAudienceOptions(me, userField, userFaculty, userRole, userYear);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const imgRef  = useRef<HTMLInputElement>(null);
   const gifRef  = useRef<HTMLInputElement>(null);
@@ -1889,25 +2003,22 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
   const handleTextChange = useCallback(async (val: string) => {
     if (val.length <= MAX) setText(val);
 
-    // Detect @-query: last @ before cursor with no space after it
-    const cursor = textRef.current?.selectionStart ?? val.length;
-    const before = val.slice(0, cursor);
-    const match  = before.match(/@([\w\u00C0-\u024F][\w\u00C0-\u024F.]*)$/);
-    if (match) {
-      const q = match[1].toLowerCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // strip accents for matching
+    const cursor  = textRef.current?.selectionStart ?? val.length;
+    const before  = val.slice(0, cursor);
+    const atMatch = before.match(/@([\w\u00C0-\u024F][\w\u00C0-\u024F.]*)$/);
+
+    if (atMatch) {
+      const raw = atMatch[1];
+      const q   = raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
       setMentionQuery(q);
       const registry = await loadMentionRegistry();
       const results = q.length === 0
         ? registry.slice(0, 6)
         : registry.filter(u => {
-            // Normalise the stored label for comparison too
             const norm = u.label.toLowerCase()
-              .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-              .replace(/\s+/g, "");
-            const normHandle = u.handle.slice(1) // strip leading @
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "");
+            const normHandle = u.handle.replace(/^@/, "").toLowerCase()
               .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            // Match if query appears anywhere in the normalised name or handle
             return norm.includes(q) || normHandle.includes(q);
           }).slice(0, 6);
       setMentionResults(results);
@@ -1920,21 +2031,14 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
   const pickMention = useCallback((handle: string) => {
     const el = textRef.current;
     if (!el) return;
-    const cursor = el.selectionStart ?? text.length;
-    const before = text.slice(0, cursor);
-    const after  = text.slice(cursor);
-    // Replace the partial @query with the full handle + space
-    const replaced = before.replace(/@([\w\u00C0-\u024F][\w\u00C0-\u024F.]*)$/, handle + " ");
-    const newText = replaced + after;
-    setText(newText.slice(0, MAX));
+    const cursor   = el.selectionStart ?? text.length;
+    const before   = text.slice(0, cursor);
+    const after    = text.slice(cursor);
+    const replaced = before.replace(/@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*$/, handle + " ");
+    setText((replaced + after).slice(0, MAX));
     setMentionQuery(null);
     setMentionResults([]);
-    // Restore focus and move cursor after handle
-    setTimeout(() => {
-      el.focus();
-      const pos = replaced.length;
-      el.setSelectionRange(pos, pos);
-    }, 0);
+    setTimeout(() => { el.focus(); el.setSelectionRange(replaced.length, replaced.length); }, 0);
   }, [text, MAX]);
 
   useEffect(() => { setTimeout(() => textRef.current?.focus(), 80); }, []);
@@ -1964,7 +2068,7 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
         <AudienceSheet
           current={audience}
           options={audienceOptions}
-          onPick={setAudience}
+          onPick={v => setAudience(v)}
           onClose={() => setShowAudience(false)}
         />
       )}
@@ -1998,8 +2102,8 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
                 <span style={{ fontSize: 10, color: C.gold, fontWeight: 600 }}>· {MAX} car. · {MAX_IMGS} img</span>
               )}
             </div>
-            {/* Audience pill — tappable */}
-            <div style={{ padding: "6px 14px 0" }}>
+            {/* Audience pill — always tappable, always gold */}
+            <div style={{ padding: "6px 14px 0", display: "flex", alignItems: "center", gap: 8 }}>
               <button onClick={() => setShowAudience(true)} style={{
                 display: "inline-flex", alignItems: "center", gap: 5,
                 background: `${C.gold}18`, border: `1px solid ${C.gold}55`,
@@ -2010,18 +2114,15 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
                   {audience === "everyone"
                     ? <><circle cx="12" cy="12" r="9" stroke={C.gold} strokeWidth="2"/><path d="M12 3c0 0-4 4-4 9s4 9 4 9M12 3c0 0 4 4 4 9s-4 9-4 9" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/><path d="M3 12h18" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/></>
-                    : audience.startsWith("field:")
-                    ? <><path d="M12 3L2 8l10 5 10-5-10-5z" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/><path d="M2 12l10 5 10-5" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/></>
+                    : audience.startsWith("faculty:")
+                    ? <><rect x="3" y="3" width="18" height="18" rx="2" stroke={C.gold} strokeWidth="2"/><path d="M3 9h18M9 9v12" stroke={C.gold} strokeWidth="1.6" strokeLinecap="round"/></>
                     : audience.startsWith("subfield:")
-                    ? <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/><path d="M9 7h7M9 11h5" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round"/></>
+                    ? <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke={C.gold} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke={C.gold} strokeWidth="2" strokeLinejoin="round"/></>
                     : <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/><circle cx="9" cy="7" r="4" stroke={C.gold} strokeWidth="2"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke={C.gold} strokeWidth="2" strokeLinecap="round"/></>
                   }
                 </svg>
                 <span style={{ fontSize: 11, fontWeight: 600, color: C.gold }}>
-                  {(() => {
-                    const opt = audienceOptions.find(o => o.value === audience);
-                    return opt ? opt.label : "Tout le monde";
-                  })()}
+                  {audienceOptions.find(o => o.value === audience)?.label ?? "Tout le monde"}
                 </span>
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                   <path d="M2 4l3 3 3-3" stroke={C.gold} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -2029,40 +2130,38 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
               </button>
             </div>
             <div style={{ position: "relative" }}>
-              {/* Syntax highlight layer — sits behind the transparent textarea */}
-              <div aria-hidden="true" style={{
-                position: "absolute", inset: 0,
-                padding: "8px 14px 10px",
-                fontSize: 16, lineHeight: 1.65,
-                fontFamily: "var(--f-sans)",
-                whiteSpace: "pre-wrap", wordBreak: "break-word",
-                color: "transparent",
-                pointerEvents: "none",
-                overflowY: "hidden",
-                zIndex: 0,
-              }}>
-                {/* Render each segment — @handles in blue, rest transparent */}
-                {text.split(/(@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*)/g).map((part, i) => {
-                  if (part.startsWith("@")) {
-                    const clean = part.replace(/\.+$/, "");
-                    const trail = part.slice(clean.length);
-                    return (
-                      <span key={i}>
-                        <span style={{ color: C.blue, fontWeight: 600, background: `${C.blue}15`, borderRadius: 3 }}>{clean}</span>
-                        <span style={{ color: "transparent" }}>{trail}</span>
-                      </span>
-                    );
-                  }
-                  return <span key={i} style={{ color: "transparent" }}>{part}</span>;
-                })}
-              </div>
-              {/* Actual textarea — transparent text, positioned on top */}
+              {/* Highlight overlay — only active while mention autocomplete is open */}
+              {mentionQuery !== null && (
+                <div aria-hidden="true" style={{
+                  position: "absolute", inset: 0,
+                  padding: "8px 14px 10px",
+                  fontSize: 16, lineHeight: 1.65,
+                  fontFamily: "var(--f-sans)",
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  color: "transparent",
+                  pointerEvents: "none",
+                  overflowY: "hidden",
+                  zIndex: 0,
+                }}>
+                  {/* Split on @token pattern (dot-separated, no spaces) */}
+                  {text.split(/(@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*)/g).map((part, i) => {
+                    if (part.match(/^@[\w\u00C0-\u024F]/)) {
+                      return (
+                        <span key={i} style={{ color: C.blue, fontWeight: 600, background: `${C.blue}15`, borderRadius: 3 }}>
+                          {part}
+                        </span>
+                      );
+                    }
+                    return <span key={i} style={{ color: "transparent" }}>{part}</span>;
+                  })}
+                </div>
+              )}
+              {/* Actual textarea — transparent only while mention autocomplete overlay is showing */}
               <textarea ref={textRef} value={text}
                 onChange={e => handleTextChange(e.target.value)}
                 onKeyDown={e => {
                   if (e.key === "Escape" && mentionQuery !== null) {
-                    setMentionQuery(null); setMentionResults([]);
-                    e.stopPropagation();
+                    setMentionQuery(null); setMentionResults([]); setAudienceQuery(null); e.stopPropagation();
                   }
                 }}
                 placeholder="Quoi de neuf dans vos projets ?"
@@ -2071,44 +2170,51 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
                   width: "100%", border: "none",
                   padding: "8px 14px 10px",
                   fontSize: 16, lineHeight: 1.65,
-                  color: text.includes("@") ? "transparent" : C.text,
+                  color: mentionQuery !== null ? "transparent" : C.text,
                   caretColor: C.text,
                   background: "transparent", outline: "none",
                   resize: "none", fontFamily: "var(--f-sans)",
                   minHeight: 230, overflowY: "hidden", boxSizing: "border-box",
                 }} />
-              {/* @mention autocomplete dropdown — appears BELOW the textarea */}
-              {mentionQuery !== null && mentionResults.length > 0 && (
-                <div style={{
-                  position: "absolute", top: "100%", left: 8, right: 8,
-                  background: C.surface, border: `1px solid ${C.border}`,
-                  borderRadius: 14, overflow: "hidden",
-                  boxShadow: "0 8px 24px rgba(0,0,0,.15)",
-                  zIndex: 10,
-                  maxHeight: 240, overflowY: "auto",
-                }}>
-                  {mentionResults.map((u, idx) => (
-                    <button key={u.id} onMouseDown={e => { e.preventDefault(); pickMention(u.handle); }}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 10,
-                        width: "100%", padding: "10px 16px",
-                        background: "none", border: "none", cursor: "pointer",
-                        fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
-                        borderBottom: idx < mentionResults.length - 1 ? `1px solid ${C.border}` : "none",
-                      }}>
-                      <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.border2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: C.sub }}>
-                          {u.label.charAt(0).toUpperCase()}
-                        </span>
-                      </div>
-                      <div style={{ textAlign: "left" }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{u.label}</div>
-                        <div style={{ fontSize: 12, color: C.blue }}>{u.handle}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
+              {/* @mention autocomplete dropdown — fixed position to escape overflow clipping */}
+              {mentionQuery !== null && mentionResults.length > 0 && (() => {
+                const rect = textRef.current?.getBoundingClientRect();
+                const top  = rect ? Math.min(rect.bottom + 4, window.innerHeight - 260) : 300;
+                const left = rect ? rect.left + 8 : 24;
+                const right = rect ? window.innerWidth - rect.right + 8 : 24;
+                return ReactDOM.createPortal(
+                  <div style={{
+                    position: "fixed", top, left, right,
+                    background: C.surface, border: `1px solid ${C.border}`,
+                    borderRadius: 14, overflow: "hidden",
+                    boxShadow: "0 8px 32px rgba(0,0,0,.2)",
+                    zIndex: 9999,
+                    maxHeight: 240, overflowY: "auto",
+                  }}>
+                    {mentionResults.map((u, idx) => (
+                      <button key={u.id} onMouseDown={e => { e.preventDefault(); pickMention(u.handle); }}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 10,
+                          width: "100%", padding: "10px 16px",
+                          background: "none", border: "none", cursor: "pointer",
+                          fontFamily: "var(--f-sans)", WebkitTapHighlightColor: "transparent",
+                          borderBottom: idx < mentionResults.length - 1 ? `1px solid ${C.border}` : "none",
+                        }}>
+                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.border2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: C.sub }}>
+                            {u.label.charAt(0).toUpperCase()}
+                          </span>
+                        </div>
+                        <div style={{ textAlign: "left" }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{u.label}</div>
+                          <div style={{ fontSize: 12, color: C.blue }}>{u.handle}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>,
+                  document.body
+                );
+              })()}
             </div>
             {imgs.length > 0 && (
               <div style={{ margin: "0 10px 10px" }}>
@@ -2186,12 +2292,10 @@ function postToDb(p: Post): DBPost {
     views:         p.views,
     comment_count: p.commentCount,
     created_at:    p.createdAt,
+    audience:      p.audience ?? "everyone",
   };
   if (p.quotedPost) {
     row.quoted_post = JSON.stringify(p.quotedPost);
-  }
-  if (p.audience && p.audience !== "everyone") {
-    (row as any).audience = p.audience;
   }
   return row as DBPost;
 }
@@ -2217,7 +2321,7 @@ function dbToPost(row: DBPost & { quoted_post?: string }, likedSet?: Set<string>
     comments:     [],
     showComments: false,
     quotedPost,
-    audience:     ((row as any).audience as Post["audience"]) ?? "everyone",
+    audience:     (row.audience as Post["audience"]) || "everyone",
   };
 }
 
@@ -2251,39 +2355,99 @@ function dbToComment(row: DBComment, likedSet?: Set<string>, dislikedSet?: Set<s
 }
 
 // ── Build tag from UserProfile ────────────────────────────────
+// ── Build tag from UserProfile ────────────────────────────────
+// Tag format:
+//   Étudiant  → "eco.3"  |  "eco.3 · del."
+//   Décanat   → "Doyen · FDSE"  |  "V.-doyenne · FDSE"  |  "Sec. · FDSE"
+//   Rectorat  → "Recteur"  |  "Rectrice"  |  "V.-recteur"  |  "Sec. gén."
+// Genre derived from u.sexe: "M" → masc, else → fém
+
 function buildAuthorTag(u: UserProfile): string {
-  const fmap: Record<string,string> = {
-    "FDSE – Droit & Sciences Économiques": "eco",
-    "FLA – Lettres & Arts": "fla",
-    "FST – Sciences & Technologies": "fst",
-    "FMP – Médecine & Pharmacie": "fmp",
-    "FASCH – Sciences Humaines": "fasch",
-    "FGC – Génie Civil": "fgc",
-    "FA – Architecture": "fa",
-    "FAMV – Agronomie & Médecine Vétérinaire": "famv",
+  const masc = u.sexe?.toUpperCase() === "M";
+
+  // ── Rectorat ────────────────────────────────────────────────
+  if (u.role === "Rectorat") {
+    const fn = (u.roleDetail ?? "").trim();
+    if (fn.startsWith("Recteur"))        return masc ? "Recteur"     : "Rectrice";
+    if (fn.startsWith("Vice-recteur"))   return masc ? "V.-recteur"  : "V.-rectrice";
+    if (fn.startsWith("Secrétaire gén")) return "Sec. gén.";
+    return fn || "Rectorat";
+  }
+
+  // ── Décanat ─────────────────────────────────────────────────
+  if (u.role === "Décanat") {
+    const fn  = (u.roleDetail ?? "").trim();
+    const fac = u.faculty;
+    let code: string;
+    if (fn.startsWith("Doyen"))           code = masc ? "Doyen"     : "Doyenne";
+    else if (fn.startsWith("Vice-doyen")) code = masc ? "V.-doyen"  : "V.-doyenne";
+    else if (fn.startsWith("Secrétaire")) code = "Sec.";
+    else                                  code = fn || "Décanat";
+    return fac ? `${code} · ${fac}` : code;
+  }
+
+  // ── Étudiant / autres ───────────────────────────────────────
+  const FIELD_CODE: Record<string, string> = {
+    "Sciences Économiques":      "eco",
+    "Sciences Juridiques":       "droit",
+    "Gestion des Affaires":      "ges",
+    "Comptabilité":              "cpt",
+    "Administration Publique":   "adm",
+    "Relations Internationales": "rin",
+    "Génie Civil":               "gc",
+    "Électromécanique":          "em",
+    "Électronique":              "en",
+    "Architecture":              "arc",
+    "Chimie":                    "chi",
+    "Topographie":               "topo",
+    "Sociologie":                "soc",
+    "Psychologie":               "psy",
+    "Travail Social":            "tso",
+    "Communication Sociale":     "com",
+    "Anthropologie-Sociologie":  "aso",
+    "Linguistique Appliquée":    "ling",
+    "Agronomie":                 "agro",
+    "Mathématiques":             "math",
+    "Physique":                  "phy",
+    "Philosophie":               "philo",
+    "Lettres Modernes":          "let",
+    "Sciences Sociales":         "sso",
+    "Langues Vivantes":          "lan",
+    "Économie Appliquée":        "eap",
+    "Statistique":               "stat",
+    "Médecine":                  "med",
+    "Pharmacie":                 "pha",
+    "Biologie Médicale":         "bim",
+    "Odontologie":               "odo",
+    "Histoire":                  "his",
+    "Géographie":                "geo",
+    "Patrimoine et Tourisme":    "tou",
+    "Informatique":              "inf",
+    "Sciences Infirmières":      "infir",
+    "Génie Électrique":          "gel",
+    "Génie Mécanique":           "gem",
   };
-  const rmap: Record<string,string> = {
-    "Délégué·e de classe":                "del.",
-    "Président·e d'association":          "prés.",
-    "Membre CEP":                         "cep",
-    "CEP — Responsable désigné·e":        "cep.resp.",
-    "Rectorat":                           "rect.",
-    // Elected post roles written by endElection for confirmed winners
-    "Responsable Affaires Académiques":   "RAA",
-    "Délégué·e":                          "dél.",
-    "Trésorier·e":                        "trés.",
-    "Secrétaire":                         "sec.",
-    "Président·e du Comité Exécutif":     "prés. CE",
+  const studentRoles: Record<string, string> = {
+    "Délégué·e de classe":            "del.",
+    "Président·e d'association":      "prés.",
+    "Membre CEP":                     "cep",
+    "CEP — Responsable désigné·e":    "cep.resp.",
+    "Responsable Affaires Académiques": "RAA",
+    "Délégué·e":                      "dél.",
+    "Trésorier·e":                    "trés.",
+    "Secrétaire":                     "sec.",
+    "Président·e du Comité Exécutif": "prés. CE",
   };
-  const code = fmap[u.faculty] ?? "fdse";
+  const code = FIELD_CODE[u.field] ?? u.field.toLowerCase().slice(0, 4);
   const base = `${code}.${u.year}`;
-  const role = rmap[u.role];
-  return role ? `${base} · ${role}` : base;
+  const roleSuffix = studentRoles[u.role];
+  return roleSuffix ? `${base} · ${roleSuffix}` : base;
 }
+
 
 // ── NotifSheet — bottom sheet notification centre ─────────────
 
-function NotifSheet({ userId, onClose }: { userId: string; onClose: () => void }) {
+function NotifSheet({ userId, onClose, onPostClick }: { userId: string; onClose: () => void; onPostClick?: (postId: string) => void }) {
   const C = useC();
   const [notifs, setNotifs] = useState<DBNotif[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2362,8 +2526,22 @@ function NotifSheet({ userId, onClose }: { userId: string; onClose: () => void }
               </svg>
               <span style={{ fontSize: 14 }}>Aucune notification</span>
             </div>
-          ) : notifs.map(n => (
-            <div key={n.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: `1px solid ${C.border}` }}>
+          ) : notifs.map(n => {
+            const { display: bodyText, postId } = parseNotifBody(n.body);
+            return (
+            <div key={n.id}
+              onClick={() => {
+                if (postId && onPostClick) { dismiss(n.id); onClose(); onPostClick(postId); }
+              }}
+              style={{
+                display: "flex", alignItems: "flex-start", gap: 12,
+                padding: "14px 20px", borderBottom: `1px solid ${C.border}`,
+                cursor: postId ? "pointer" : "default",
+                background: "transparent", transition: "background .12s",
+              }}
+              onMouseEnter={e => { if (postId) (e.currentTarget as HTMLDivElement).style.background = `${C.border}50`; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+            >
               {/* Icon */}
               <div style={{ width: 38, height: 38, borderRadius: "50%", background: n.type === "mention" ? `${C.gold}22` : `${C.blue}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                 {n.type === "mention" ? (
@@ -2379,16 +2557,24 @@ function NotifSheet({ userId, onClose }: { userId: string; onClose: () => void }
                 )}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, color: C.text, lineHeight: 1.5 }}>{n.body}</div>
+                <div style={{ fontSize: 14, color: C.text, lineHeight: 1.5 }}>{bodyText}</div>
                 <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{fmtTime(n.created_at)}</div>
               </div>
-              <button onClick={() => dismiss(n.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, fontSize: 16, padding: "0 2px", flexShrink: 0, lineHeight: 1, WebkitTapHighlightColor: "transparent", marginTop: 2 }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                </svg>
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, marginTop: 2 }}>
+                {postId && (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.4 }}>
+                    <path d="M9 18l6-6-6-6" stroke={C.text} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
+                <button onClick={e => { e.stopPropagation(); dismiss(n.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, padding: "0 2px", lineHeight: 1, WebkitTapHighlightColor: "transparent" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         <style>{`
@@ -2440,7 +2626,7 @@ function NotifBell({ userId, onClick }: { userId: string; onClick: () => void })
 
 // ── CommunityHeader ───────────────────────────────────────────
 
-export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setTab: (t: "all"|"mine") => void; user?: import("./AuthFlow").UserProfile | null }) {
+export function CommunityHeader({ tab, setTab, user, onNotifPostClick }: { tab: "all"|"mine"; setTab: (t: "all"|"mine") => void; user?: import("./AuthFlow").UserProfile | null; onNotifPostClick?: (postId: string) => void }) {
   const C = useC();
   const { user: ctxUser } = useProfile();
   const myId = ctxUser?.id ?? user?.id ?? "";
@@ -2448,7 +2634,13 @@ export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setT
 
   return (
     <>
-      {showNotifs && <NotifSheet userId={myId} onClose={() => setShowNotifs(false)} />}
+      {showNotifs && <NotifSheet userId={myId} onClose={() => setShowNotifs(false)} onPostClick={postId => {
+        setShowNotifs(false);
+        // Dispatch custom event — CommunityTab listens even if it's a sibling
+        window.dispatchEvent(new CustomEvent("civique:openPost", { detail: postId }));
+        // Also call prop if wired by app shell
+        onNotifPostClick?.(postId);
+      }} />}
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
         {/* Row 1 — Logo centred, icons pinned right */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "10px 16px 6px", position: "relative" }}>
@@ -2476,7 +2668,7 @@ export function CommunityHeader({ tab, setTab, user }: { tab: "all"|"mine"; setT
 
 export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, composePrefill = "", onComposeClosed }: { feedTab: "all" | "mine"; currentUser?: UserProfile; autoOpenCompose?: boolean; composePrefill?: string; onComposeClosed?: () => void }) {
   const C = useC();
-  const { profilePic } = useProfile();
+  const { profilePic, user: ctxUser } = useProfile();
 
   // Build ME from the authenticated user
   const ME_LIVE: Author = currentUser ? {
@@ -2495,6 +2687,31 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
 
   const [posts, setPosts]             = useState<Post[]>([]);
   const [loading, setLoading]         = useState(true);
+  const [focusPostId, setFocusPostId] = useState<string | null>(null);
+  const postRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Listen for notif-navigate events dispatched by CommunityHeader (sibling in app shell)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const postId = (e as CustomEvent<string>).detail;
+      if (!postId) return;
+      setFocusPostId(postId);
+      // If the target post is not ours it won't appear on "mine" tab — dispatch tab switch
+      const targetPost = posts.find(p => p.id === postId);
+      if (targetPost && targetPost.author.id !== ME_LIVE.id) {
+        window.dispatchEvent(new CustomEvent("civique:switchTab", { detail: "all" }));
+      }
+    };
+    window.addEventListener("civique:openPost", handler);
+    return () => window.removeEventListener("civique:openPost", handler);
+  }, [posts, ME_LIVE.id]);
+
+  // When focusPostId is set, scroll the post into view then auto-open it
+  useEffect(() => {
+    if (!focusPostId) return;
+    const el = postRefs.current.get(focusPostId);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusPostId]);
   const [photoCache, setPhotoCache]   = useState<Record<string, string>>({});
   const [showCompose, setShowCompose] = useState(autoOpenCompose);
   const [composeDraft, setComposeDraft] = useState(composePrefill);
@@ -2618,36 +2835,81 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
   }, []);
 
   // ── Apply ranking algorithm on "all" tab; "mine" stays chronological
-  const { faculty: vFaculty, year: vYear } = viewerCtx(currentUser);
+  const { field: vField, year: vYear } = viewerCtx(currentUser);
 
-  // ── Audience gate: hide posts restricted to a field/class the viewer isn't in
-  // Viewer's own normalised subfield key (matches how author stored it)
-  const viewerSubfieldKey = (currentUser?.field ?? "").trim().toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\s/\-]+/g, "_");
-
+  // ── Audience gate: hide posts restricted to a scope the viewer isn't in
   function passesAudienceGate(p: Post): boolean {
     const aud = p.audience ?? "everyone";
     if (aud === "everyone") return true;
-    // Author's own post always visible to themselves
-    if (p.author.id === ME_LIVE.id) return true;
-    if (aud.startsWith("field:")) {
-      const requiredCode = aud.replace("field:", "");
-      const { facultyCode: vCode } = parseTag(ME_LIVE.tag);
-      return vCode === requiredCode;
+
+    // currentUser prop is authoritative; ctxUser (from ProfileContext, read at component level) is fallback
+    const viewer = currentUser ?? ctxUser ?? null;
+
+    // Author always sees their own post
+    const viewerId = viewer?.id ?? ME_LIVE.id;
+    if (p.author.id === viewerId && viewerId !== "") return true;
+
+    // No viewer info → show the post (fan-out notifs are the real enforcement)
+    if (!viewer) return true;
+
+    const vFaculty  = viewer.faculty  ?? "";
+    const vField    = viewer.field    ?? "";
+    const vYear     = viewer.year     ?? 1;
+    const vRole     = viewer.role     ?? "";
+    const vVacation = viewer.vacation ?? "";
+
+    // 3 — Ma faculté
+    if (aud.startsWith("faculty:")) {
+      return vFaculty === aud.slice("faculty:".length);
     }
+
+    // Parse FAC and rest for subfield/class/classv
+    const withoutPrefix = aud.slice(aud.indexOf(":") + 1);
+    const facEnd        = withoutPrefix.indexOf(":");
+    const reqFac        = facEnd === -1 ? withoutPrefix : withoutPrefix.slice(0, facEnd);
+    const rest          = facEnd === -1 ? "" : withoutPrefix.slice(facEnd + 1);
+
+    // 4 — Mon parcours: subfield:FAC:FieldName
     if (aud.startsWith("subfield:")) {
-      const requiredKey = aud.replace("subfield:", "");
-      // Viewer must be in the same faculty AND same sub-field
-      const { facultyCode: vCode } = parseTag(ME_LIVE.tag);
-      const { facultyCode: pCode } = parseTag(p.author.tag);
-      return vCode === pCode && viewerSubfieldKey === requiredKey;
+      return vFaculty === reqFac && vField === rest;
     }
+
+    // 5 — Ma promotion: class:FAC:FieldName:year
     if (aud.startsWith("class:")) {
-      const required = aud.replace("class:", ""); // e.g. "eco.3"
-      const { facultyCode: vCode, year: vYearTag } = parseTag(ME_LIVE.tag);
-      const [rCode, rYr] = required.split(".");
-      return vCode === rCode && vYearTag !== null && String(vYearTag) === rYr;
+      const lastColon = rest.lastIndexOf(":");
+      const reqField  = lastColon === -1 ? rest : rest.slice(0, lastColon);
+      const reqYr     = lastColon === -1 ? ""   : rest.slice(lastColon + 1);
+      return (
+        vFaculty === reqFac &&
+        vField   === reqField &&
+        String(vYear) === reqYr &&
+        vRole !== "Décanat" &&
+        vRole !== "Rectorat"
+      );
     }
+
+    // 5b — Ma promotion + vacation: classv:FAC:FieldName:year:Jour|Soir
+    if (aud.startsWith("classv:")) {
+      const parts    = rest.split(":");
+      const reqVac   = parts[parts.length - 1];
+      const reqYr    = parts[parts.length - 2];
+      const reqField = parts.slice(0, parts.length - 2).join(":");
+      return (
+        vFaculty   === reqFac   &&
+        vField     === reqField &&
+        String(vYear) === reqYr &&
+        vVacation  === reqVac   &&
+        vRole !== "Décanat" &&
+        vRole !== "Rectorat"
+      );
+    }
+
+    // Legacy field: scope
+    if (aud.startsWith("field:")) {
+      const { facultyCode: vCode } = parseTag(ME_LIVE.tag);
+      return vCode === aud.slice("field:".length);
+    }
+
     return true;
   }
 
@@ -2663,7 +2925,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
       return [...posts_for_rank].sort((a, b) => knownRank(a.id) - knownRank(b.id));
     }
 
-    const ranked = rankFeed(posts_for_rank, vFaculty, vYear, seenGrayIds.current);
+    const ranked = rankFeed(posts_for_rank, vField, vYear, seenGrayIds.current);
 
     // Capture this order into frozenOrder so stampFreeze can use it
     frozenOrder.current = new Map(ranked.map((p, i) => [p.id, i]));
@@ -2685,12 +2947,12 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     text: string,
     context: "post" | "comment",
     contextBody?: string,
-    knownIds?: Map<string, string>
+    knownIds?: Map<string, string>,
+    postId?: string,
   ) => {
     const mentions = text.match(/@[\w\u00C0-\u024F][\w\u00C0-\u024F.]*/g) ?? [];
     if (!mentions.length) return;
 
-    // Build a handle→userId map for all unique mentions
     const notified = new Set<string>();
     const preview  = contextBody
       ? ` : « ${contextBody.slice(0, 60)}${contextBody.length > 60 ? "…" : ""} »`
@@ -2699,10 +2961,8 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     for (const mention of mentions) {
       const norm = mention.toLowerCase().replace(/^@/, "");
 
-      // 1. Check the pre-built registry map first (from ComposeModal autocomplete)
       let targetId = knownIds?.get(norm) ?? knownIds?.get(`@${norm}`);
 
-      // 2. Fallback: resolve from posts already in memory
       if (!targetId) {
         for (const p of posts) {
           const h = p.author.handle.toLowerCase().replace(/^@/, "");
@@ -2710,12 +2970,10 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
         }
       }
 
-      // 3. Last resort: query Supabase directly by nom+prenom
       if (!targetId) {
         try {
           const { supabase } = await import("./supabase");
           if (supabase) {
-            // norm is "nom.prenom" — split and search
             const [nom, ...rest] = norm.split(".");
             const prenom = rest.join(".");
             const { data } = await (supabase as any)
@@ -2740,6 +2998,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
           : `${ME_LIVE.name} vous a mentionné dans un commentaire${preview}`,
         fromId: ME_LIVE.id,
         type:   "mention",
+        postId,
       });
     }
   }, [posts, ME_LIVE]);
@@ -2756,7 +3015,14 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     };
     setPosts(prev => [newPost, ...prev]);
     insertPost(postToDb(newPost));
-    notifyMentions(text, "post", text, knownIds);
+
+    // Fan-out: push a notif to every user in the targeted audience
+    if (audience && audience !== "everyone") {
+      const authorName = `${currentUser?.nom ?? ""} ${currentUser?.prenom ?? ""}`.trim() || ME_LIVE.name;
+      fanOutAudienceNotifs(newPost.id, audience, ME_LIVE.id, authorName);
+    }
+
+    notifyMentions(text, "post", text, knownIds, newPost.id);
   };
 
   const addComment = (postId: string, text: string, imgs?: string[]) => {
@@ -2774,7 +3040,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     incrementCommentCount(postId);
 
     // Notify @mentioned users in the comment
-    notifyMentions(text, "comment", text);
+    notifyMentions(text, "comment", text, undefined, postId);
 
     const post = posts.find(p => p.id === postId);
     if (post && post.author.id !== ME_LIVE.id) {
@@ -2788,6 +3054,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
           body:   `${ME_LIVE.name} a commenté votre publication`,
           fromId: ME_LIVE.id,
           type:   "comment",
+          postId,
         });
       }
     }
@@ -2888,7 +3155,7 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
 
   return (
     <>
-    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} userField={currentUser?.field ?? ""} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience, knownIds) => { addPost(text, imgs, audience, knownIds); setShowCompose(false); setComposeDraft(""); }} />}
+    {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} userField={currentUser?.field ?? ""} userFaculty={currentUser?.faculty ?? ""} userRole={currentUser?.role ?? ""} userYear={currentUser?.year ?? 1} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience, knownIds) => { addPost(text, imgs, audience, knownIds); setShowCompose(false); setComposeDraft(""); }} />}
     <div onScroll={handleScroll} style={{ background: C.bg, minHeight: "100%", overflowY: "auto", height: "100%" }}>
 
       {/* InlineCompose intentionally removed — use the FAB (+ button) to compose */}
@@ -2898,19 +3165,23 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
       ) : feed.length === 0 ? (
         <div style={{ textAlign: "center", padding: "48px 24px", color: C.dim, fontSize: 14 }}>Aucune publication pour l'instant.</div>
       ) : feed.map(post => (
-        <PostCard key={post.id} post={post}
-          me={ME_LIVE}
-          profilePic={photoCache[post.author.id] ?? (post.author.id === ME_LIVE.id ? profilePic : null)}
-          onLike={() => toggleLike(post.id)}
-          onRepost={(kind, text, imgs) => toggleRepost(post.id, kind, text, imgs)}
-          onComment={(text, imgs) => addComment(post.id, text, imgs)}
-          onDelete={() => deletePost(post.id)}
-          onHide={() => hidePost(post.id)}
-          onView={() => incrementPostViews(post.id)}
-          photoCache={photoCache}
-          userId={uid}
-          knownHandles={knownHandles}
-        />
+        <div key={post.id} ref={el => { if (el) postRefs.current.set(post.id, el); else postRefs.current.delete(post.id); }}>
+          <PostCard post={post}
+            me={ME_LIVE}
+            profilePic={photoCache[post.author.id] ?? (post.author.id === ME_LIVE.id ? profilePic : null)}
+            onLike={() => toggleLike(post.id)}
+            onRepost={(kind, text, imgs) => toggleRepost(post.id, kind, text, imgs)}
+            onComment={(text, imgs) => addComment(post.id, text, imgs)}
+            onDelete={() => deletePost(post.id)}
+            onHide={() => hidePost(post.id)}
+            onView={() => incrementPostViews(post.id)}
+            photoCache={photoCache}
+            userId={uid}
+            knownHandles={knownHandles}
+            autoOpen={focusPostId === post.id}
+            onAutoOpenConsumed={() => setFocusPostId(null)}
+          />
+        </div>
       ))}
       <div style={{ height: 80 }} />
 
