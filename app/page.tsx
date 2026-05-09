@@ -641,7 +641,7 @@ export default function Page() {
             openThesis={openThesis} setOpenThesis={setOpenThesis}
             composePrefill={composePrefill} setComposePrefill={setComposePrefill}
             onBadgeGranted={() => { /* badge only awarded to winners by endElection */ }}
-          />
+          /> 
         </ElectionProvider>
       )}
     </>
