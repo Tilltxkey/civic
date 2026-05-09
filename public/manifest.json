@@ -4,8 +4,8 @@
   "description": "Fdse app",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#000000",
-  "theme_color": "#000000",
+  "background_color": "transparent",
+  "theme_color": "#ffffff",
   "orientation": "portrait",
   "icons": [
     {
