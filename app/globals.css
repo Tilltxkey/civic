@@ -27,3 +27,23 @@ html, body {
 [data-theme="dark"] body {
   background: #0F0F10;
 }
+
+/* globals.css */
+
+html, body {
+  /* This ensures the background is white even in the "overscroll" areas */
+  background-color: #ffffff;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  /* env(safe-area-inset-top) is the magic variable. 
+     It calculates the height of the clock/battery bar and adds 
+     it as padding so your content doesn't get cut off, 
+     but the BACKGROUND still stays white behind the clock.
+  */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}

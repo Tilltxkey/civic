@@ -1,13 +1,18 @@
 /**
- * layout.tsx - Fixed for White Background & Icon Scaling
+ * layout.tsx 
+ * ─────────────────────────────────────────────────────────────
+ * RESTORED TO ORIGINAL + NOTCH FIX
+ * ─────────────────────────────────────────────────────────────
  */
 
 import type { Metadata, Viewport } from "next";
 import { DM_Sans, DM_Mono } from "next/font/google";
 import "./globals.css";
-import { LangProvider }    from "./components/LangContext";
-import { ThemeProvider }   from "./components/ThemeContext";
+import { LangProvider } from "./components/LangContext";
+import { ThemeProvider } from "./components/ThemeContext";
 import { ProfileProvider } from "./components/ProfileContext";
+
+// [PWA COMPONENTS]
 import ServiceWorkerLoader from "./components/ServiceWorkerLoader";
 import InstallPrompt from "./components/InstallPrompt";
 
@@ -25,44 +30,30 @@ const dmMono = DM_Mono({
   display: "swap",
 });
 
+// Viewport is separated in newer Next.js to handle the "gross line" issue
 export const viewport: Viewport = {
-  /* FIX 1: Changing this to #ffffff removes the black/gold bar 
-     at the very top of the screen on the splash page.
-  */
   themeColor: "#ffffff",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-  viewportFit: "cover",
+  viewportFit: "cover", // THIS REMOVES THE TOP/BOTTOM LINES
 };
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://civicfdse.vercel.app"),
   title: "Civic",
-  description: "Plateforme numérique",
-
+  description: "nah",
   manifest: "/manifest.json",
-
+  
   appleWebApp: {
     capable: true,
     title: "Civic",
-    /* FIX 2: 'default' uses the white background 
-       instead of forcing the black translucent look.
-    */
-    statusBarStyle: "default", 
-  },
-
-  icons: {
-    /* [APP ICON: This is the one you see on your home screen] */
-    icon: "/icon-512x512.png", 
-    /* [APPLE ICON: This is the one seen on iPhones/iPads] */
-    apple: "/icon-512x512.png",
+    // 'black-translucent' makes the app content go UNDER the clock/battery
+    statusBarStyle: "black-translucent", 
   },
 
   openGraph: {
     title: "Civic",
-    description: "Election Tracking",
+    description: "fellow",
     url: "https://civicfdse.vercel.app",
     siteName: "Civic",
     images: [{ url: "/og-default.png", width: 1200, height: 630 }],
@@ -75,8 +66,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="fr" className={`${sans.variable} ${dmMono.variable}`}>
       <head>
-        <meta name="mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
+        {/* Force high quality icon [IMAGE ICON: /icon-512x512.png] */}
+        <link rel="icon" href="/icon-512x512.png" sizes="any" />
+        <link rel="apple-touch-icon" href="/icon-512x512.png" />
       </head>
       <body>
         <ThemeProvider>
