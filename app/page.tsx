@@ -47,6 +47,7 @@ import DesktopGate from "./components/DesktopGate";
 import { UserSync } from "./components/UserSync";
 import AuthFlow    from "./components/AuthFlow";
 import type { UserProfile } from "./components/AuthFlow";
+import InstallPrompt from "./components/InstallPrompt";
 
 // ── Data & helpers ───────────────────────
 import { useTheme } from "./components/ThemeContext";

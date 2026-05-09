@@ -1,5 +1,5 @@
 // app/post/[id]/page.tsx
-// Server component — only bots reach this (middleware redirects humans to SPA).
+// Server component — only bots reach this (proxy redirects humans to SPA).
 // Renders OG tags so WhatsApp shows: [avatar] | Name (@handle) sur Civic | post body
 
 import type { Metadata } from "next";
