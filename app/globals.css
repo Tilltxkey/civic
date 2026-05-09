@@ -1,7 +1,7 @@
 /*
  * globals.css
  * ─────────────────────────────────────────────────────────────
- * Minimal global reset. Everything else is inline in components.
+ * Optimized for PWA / Full-screen bleed
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -11,39 +11,45 @@
   padding: 0;
 }
 
-html, body {
-  background: #F4F3F0;                      /* matches C.bg in tokens.ts   */
-  font-family: var(--f-sans, sans-serif);   /* DM Sans from layout.tsx      */
+html {
+  /* Fixes height issues on mobile browsers */
+  height: -webkit-fill-available;
+}
+
+body {
+  /* 1. Use the color you want to bleed into the status/home bars */
+  background-color: #ffffff !important;
+  
+  font-family: var(--f-sans, sans-serif);
   -webkit-font-smoothing: antialiased;
-  overscroll-behavior: none;                /* prevents pull-to-refresh jank */
+  
+  /* 2. Prevents bouncy scrolling on iOS which causes "white flashes" */
+  overscroll-behavior: none;
+  
+  /* 3. Essential for the "Home Bar" and "Notch" fix.
+     These variables are provided by the phone. They add invisible 
+     padding so your content doesn't get cut off, while letting 
+     the background color fill the space. */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+
+  min-height: 100vh;
+  min-height: -webkit-fill-available;
 }
 
 /* ── Dark mode via data-theme attribute ── */
 [data-theme="dark"] {
-  background: #0F0F10;
+  background-color: #0F0F10 !important;
   color: #F0EFEC;
 }
 
 [data-theme="dark"] body {
-  background: #0F0F10;
+  background-color: #0F0F10 !important;
 }
 
-/* globals.css */
-
-html, body {
-  /* This ensures the background is white even in the "overscroll" areas */
-  background-color: #ffffff;
-  margin: 0;
-  padding: 0;
-  height: 100%;
-}
-
-body {
-  /* env(safe-area-inset-top) is the magic variable. 
-     It calculates the height of the clock/battery bar and adds 
-     it as padding so your content doesn't get cut off, 
-     but the BACKGROUND still stays white behind the clock.
-  */
-  padding-top: env(safe-area-inset-top);
-  padding-bottom: env(safe-area-inset-bottom);
+/* ── Optional: Hide scrollbars for a cleaner app look ── */
+::-webkit-scrollbar {
+  display: none;
 }

@@ -30,12 +30,16 @@ const dmMono = DM_Mono({
   display: "swap",
 });
 
-// Viewport is separated in newer Next.js to handle the "gross line" issue
+// Inside layout.tsx
+
 export const viewport: Viewport = {
   themeColor: "#ffffff",
   width: "device-width",
   initialScale: 1,
-  viewportFit: "cover", // THIS REMOVES THE TOP/BOTTOM LINES
+  maximumScale: 1,
+  userScalable: false,
+  // THIS IS THE KEY: It removes the bottom line by covering the whole screen
+  viewportFit: "cover", 
 };
 
 export const metadata: Metadata = {
