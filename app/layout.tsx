@@ -40,21 +40,10 @@ const dmMono = DM_Mono({
 
 // ── Metadata Configuration ────────────────────────────────────
 export const metadata: Metadata = {
+  // REQUIRED: This turns "/og-default.png" into "https://civicfdse.vercel.app/og-default.png"
   metadataBase: new URL("https://civicfdse.vercel.app"),
   title: "Civic",
   description: "nah",
-
-  manifest: "/manifest.json",
-
-  icons: {
-    icon: [
-      { url: "/icon-192x192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icon-512x512.png", sizes: "512x512", type: "image/png" },
-    ],
-    apple: [
-      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
-    ],
-  },
   
   openGraph: {
     title: "Civic",
