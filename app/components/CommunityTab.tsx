@@ -1624,22 +1624,32 @@ function PostCard({ post, onLike, onRepost, onComment, onDelete, onHide, onView,
   const handleShare = (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowMenuSheet(false);
-    // X (Twitter)-style WhatsApp share card:
-    // Line 1: "Name (@handle) sur Civic"  ← bold header
-    // Line 2: blank
-    // Line 3: post body (truncated)
-    // Line 4: blank
-    // Line 5: "🔗 civic.app"  ← link triggers WhatsApp URL preview card
+
     const handle = post.author.handle
       || "@" + post.author.name.toLowerCase().replace(/\s+/g, "");
     const snippet = post.body.length > 280 ? post.body.slice(0, 280) + "\u2026" : post.body;
-    // Send ONLY the URL — no surrounding text.
-    // WhatsApp generates the full rich card (avatar, name, body, link) entirely
-    // from the OG tags on the page. Any extra text appears as ugly flat text
-    // OUTSIDE the card, exactly like image 1. URL-only = clean card like image 2.
     const postUrl = `https://civicfdse.vercel.app/post/${post.id}`;
-    const url = `https://wa.me/?text=${encodeURIComponent(postUrl)}`;
-    window.open(url, "_blank", "noopener,noreferrer");
+    const waUrl   = `https://wa.me/?text=${encodeURIComponent(postUrl)}`;
+
+    // ── DEBUG: everything WhatsApp will read from the OG page ──
+    console.group("📤 Partager sur WhatsApp");
+    console.log("Post ID       :", post.id);
+    console.log("Author ID     :", post.author.id);
+    console.log("Author name   :", post.author.name);
+    console.log("Author handle :", handle);
+    console.log("Author badge  :", post.author.badge);
+    console.log("Author tag    :", post.author.tag);
+    console.log("Body (full)   :", post.body);
+    console.log("Body (snippet):", snippet);
+    console.log("Post URL      :", postUrl);
+    console.log("WA URL        :", waUrl);
+    console.log("Expected OG title      :", `${post.author.name} (${handle}) sur Civic`);
+    console.log("Expected OG description:", snippet);
+    console.log("Expected OG image      :", "(fetched server-side from civique_users.profile_photo)");
+    console.groupEnd();
+    // ───────────────────────────────────────────────────────────
+
+    window.open(waUrl, "_blank", "noopener,noreferrer");
   };
 
   const PREVIEW_LEN = 220;

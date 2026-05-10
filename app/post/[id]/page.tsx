@@ -7,12 +7,13 @@ import type { Metadata } from "next";
 const BASE = "https://civicfdse.vercel.app";
 
 interface PostRow {
-  id:            string;
-  author_id:     string;
-  author_nom:    string;
-  author_prenom: string;
-  body:          string;
-  imgs:          string[];
+  id:             string;
+  author_id:      string;
+  author_nom:     string;
+  author_prenom:  string;
+  author_handle:  string;   // ← added: stored directly in civique_posts
+  body:           string;
+  imgs:           string[];
 }
 
 interface UserRow {
@@ -23,7 +24,8 @@ interface UserRow {
 async function fetchPost(id: string): Promise<PostRow | null> {
   try {
     const res = await fetch(
-      `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/civique_posts?id=eq.${encodeURIComponent(id)}&select=id,author_id,author_nom,author_prenom,body,imgs&limit=1`,
+      // ↓ added author_handle to the select list
+      `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/civique_posts?id=eq.${encodeURIComponent(id)}&select=id,author_id,author_nom,author_prenom,author_handle,body,imgs&limit=1`,
       {
         headers: {
           apikey:        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -39,7 +41,6 @@ async function fetchPost(id: string): Promise<PostRow | null> {
   }
 }
 
-// Fetch the author's profile_photo and avatar_color from civique_users
 async function fetchAuthorProfile(authorId: string): Promise<UserRow | null> {
   if (!authorId) return null;
   try {
@@ -60,7 +61,6 @@ async function fetchAuthorProfile(authorId: string): Promise<UserRow | null> {
   }
 }
 
-// Fallback: generated initials avatar using the user's brand color
 function initialsAvatarUrl(nom: string, prenom: string, color: string): string {
   const initials = encodeURIComponent(`${nom[0] ?? ""}${prenom[0] ?? ""}`.toUpperCase());
   const bg       = encodeURIComponent((color ?? "#C47F00").replace("#", ""));
@@ -80,20 +80,29 @@ async function buildMeta(post: PostRow | null, id: string) {
   const nom    = post.author_nom    ?? "";
   const prenom = post.author_prenom ?? "";
   const name   = `${nom} ${prenom}`.trim();
-  // Same handle logic as CommunityTab: @nom (no accents, no spaces, lowercase)
-  const handle = `@${nom.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "")}`;
-  const body   = post.body ?? "";
 
-  // Get the author's profile photo from civique_users
+  // Use the handle stored in the post row — this is the exact same value
+  // that CommunityTab wrote when the post was created, so it always matches.
+  // Normalise: ensure it starts with @ and has no leading/trailing spaces.
+  const rawHandle = (post.author_handle ?? "").trim();
+  const handle    = rawHandle.startsWith("@") ? rawHandle : `@${rawHandle}`;
+
+  const body = post.body ?? "";
+
   const authorProfile = await fetchAuthorProfile(post.author_id);
   const profilePhoto  = authorProfile?.profile_photo;
 
-  // Priority: real profile photo → initials avatar (never use the post image,
-  // because a square avatar is what gives us the X-style card layout on WhatsApp)
-  const image =
-    profilePhoto && profilePhoto.startsWith("http")
-      ? profilePhoto
-      : initialsAvatarUrl(nom, prenom, authorProfile?.avatar_color ?? "#C47F00");
+  // base64 data URLs (data:image/...) can't be used as og:image —
+  // WhatsApp needs a real https:// URL it can fetch over the network.
+  // Fall back to the initials avatar (ui-avatars.com) in that case.
+  const isUsableUrl = (
+    profilePhoto != null &&
+    profilePhoto.startsWith("http") &&
+    !profilePhoto.startsWith("data:")
+  );
+  const image = isUsableUrl
+    ? profilePhoto!
+    : initialsAvatarUrl(nom, prenom, authorProfile?.avatar_color ?? "#C47F00");
 
   return {
     title: `${name} (${handle}) sur Civic`,
@@ -122,8 +131,6 @@ export async function generateMetadata(
       images: [{ url: m.image, width: 400, height: 400, alt: m.title }],
     },
     twitter: {
-      // "summary" = small square image + title + description (the X.com card style)
-      // NOT "summary_large_image" which renders as a big banner
       card:        "summary",
       title:       m.title,
       description: m.desc,
@@ -132,7 +139,6 @@ export async function generateMetadata(
   };
 }
 
-// Minimal page body — bots only read <head>, never shown to real users
 export default async function PostSharePage({
   params,
 }: {
