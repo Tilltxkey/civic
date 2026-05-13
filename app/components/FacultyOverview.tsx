@@ -98,17 +98,21 @@ function YearBlock({ year, faculty, field }: { year: number; faculty: string; fi
     const load = async () => {
       setLoading(true);
       try {
-        // ── Fetch all elections and match client-side ──
+        // ── Elections: server-side filter by year + vacation, minimal columns ──
+        // Use like on category to avoid fetching the whole table.
+        // Category format: "faculty|field|year|vacation"
+        // We filter by year and vacation server-side, then match faculty/field client-side
+        // (needed because faculty name may vary e.g. "FDSE" vs "FDSE – Droit & Sciences Économiques")
         const { data: allElections } = await supabase!
           .from("civique_elections")
-          .select("*");
+          .select("id, category, status, inscription_ends_at")
+          .like("category", `%|${year}|${vacation}`);
 
         const matching = (allElections ?? []).filter(e => {
           const parts  = e.category.split("|");
           const eFac   = parts[0];
           const eField = parts[1];
           const eYear  = parseInt(parts[2], 10);
-          // Match: faculty contains our key OR our key contains theirs
           const facMatch   = eFac === faculty || eFac.includes(faculty) || faculty.includes(eFac);
           const fieldMatch = eField === field;
           const yearMatch  = eYear === year;
@@ -145,7 +149,7 @@ function YearBlock({ year, faculty, field }: { year: number; faculty: string; fi
         // ── Candidates by election_id ──
         const { data: cData } = await supabase!
           .from("civique_candidates")
-          .select("*")
+          .select("id, user_id, post_id, user_name, created_at")
           .eq("election_id", elData.id);
 
         if (!cancelled) setCandidates((cData ?? []).map(r => ({
@@ -153,25 +157,25 @@ function YearBlock({ year, faculty, field }: { year: number; faculty: string; fi
           userId:     r.user_id,
           postId:     r.post_id,
           userName:   r.user_name,
-          userSexe:   r.user_sexe,
-          electionId: r.election_id,
-          badge:      r.badge,
+          userSexe:   "",
+          electionId: elData.id,
+          badge:      null,
           createdAt:  r.created_at,
         })));
 
         // ── All votes by election_id ──
         const { data: vData } = await supabase!
           .from("civique_votes")
-          .select("*")
+          .select("candidate_id, post_id")
           .eq("election_id", elData.id);
 
         if (!cancelled) setAllVotes((vData ?? []).map(r => ({
-          id:          r.id,
-          voterId:     r.voter_id,
+          id:          "",
+          voterId:     "",
           candidateId: r.candidate_id,
           postId:      r.post_id,
-          electionId:  r.election_id,
-          createdAt:   r.created_at,
+          electionId:  elData.id,
+          createdAt:   "",
         })));
 
         // ── Eligible voters — use actual category parts from DB ──

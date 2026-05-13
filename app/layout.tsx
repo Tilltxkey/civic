@@ -33,7 +33,7 @@ const dmMono = DM_Mono({
 // Inside layout.tsx
 
 export const viewport: Viewport = {
-  themeColor: "#ffffff",
+  themeColor: "#000000",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
