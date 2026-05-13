@@ -260,7 +260,7 @@ function AppShell({
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
   }, []);
-  const TAB_ORDER = ["results", "vote", "community"] as const;
+  const TAB_ORDER = ["community", "vote", "results"] as const;
   const swipeRef = useRef<{ x: number; y: number } | null>(null);
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -281,7 +281,14 @@ function AppShell({
   };
   const { election } = useElection();
 
-  const [selectedRaceId, setSelectedRaceId] = useState<string>("president");
+  const [selectedRaceId, setSelectedRaceIdRaw] = useState<string>(() => {
+    if (typeof window === "undefined") return "president";
+    return localStorage.getItem("civique_selected_race") ?? "president";
+  });
+  const setSelectedRaceId = (id: string) => {
+    setSelectedRaceIdRaw(id);
+    localStorage.setItem("civique_selected_race", id);
+  };
   const [userPicked, setUserPicked]         = useState(false);
 
   // Overlay state — shown on election launch and between sequential posts.
@@ -440,14 +447,16 @@ function AppShell({
           position: "fixed", bottom: 0, left: 0, right: 0,
           zIndex: 10, background: C.surface, borderTop: `1px solid ${C.border}`,
           display: "flex", alignItems: "stretch",
+          paddingTop: "5px",
           paddingBottom: "env(safe-area-inset-bottom)",
         }}>
           {([
-            { id: "results",   label: t("nav.theses"), icon: (
+            { id: "community", label: t("nav.community"), icon: (
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-                <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z" stroke="currentColor" strokeWidth="1.7"/>
-                <path d="M9 7h7M9 11h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <circle cx="9.5" cy="8" r="3" stroke="currentColor" strokeWidth="1.7" fill="none"/>
+                <path d="M3 19c0-3 2.9-5 6.5-5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+                <circle cx="16.5" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+                <path d="M20.5 18.5c0-2.2-1.8-3.8-4-3.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
             )},
             { id: "vote",      label: t("nav.vote"), icon: (
@@ -461,12 +470,11 @@ function AppShell({
                 <path d="M12.5 17H20" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
               </svg>
             )},
-            { id: "community", label: t("nav.community"), icon: (
+            { id: "results",   label: t("nav.theses"), icon: (
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <circle cx="9.5" cy="8" r="3" stroke="currentColor" strokeWidth="1.7" fill="none"/>
-                <path d="M3 19c0-3 2.9-5 6.5-5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-                <circle cx="16.5" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                <path d="M20.5 18.5c0-2.2-1.8-3.8-4-3.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+                <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z" stroke="currentColor" strokeWidth="1.7"/>
+                <path d="M9 7h7M9 11h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
             )},
           ] as { id: "results"|"vote"|"community"; label: string; icon: ReactNode }[]).map(({ id, label, icon }) => {
@@ -591,7 +599,17 @@ export default function Page() {
   const [vB,    setVB]    = useState(INITIAL_VOTES_B);
   const [rep,   setRep]   = useState(INITIAL_REPORTING);
   const [depts, setDepts] = useState<Dept[]>(DEPTS);
-  const [activeTab, setActiveTab]   = useState<"results"|"vote"|"community">("vote");
+
+  // ── Persist active tab + selected race across PWA background kills ──
+  const [activeTab, setActiveTabRaw]   = useState<"results"|"vote"|"community">(() => {
+    if (typeof window === "undefined") return "community";
+    return (localStorage.getItem("civique_active_tab") as any) ?? "community";
+  });
+  const setActiveTab = (t: "results"|"vote"|"community") => {
+    setActiveTabRaw(t);
+    localStorage.setItem("civique_active_tab", t);
+  };
+
   const [communityFeed, setCommunityFeed] = useState<"all"|"mine">("all");
   const [openThesis, setOpenThesis] = useState<Thesis | null>(null);
   const [composePrefill, setComposePrefill] = useState("");

@@ -2659,7 +2659,7 @@ export function CommunityHeader({ tab, setTab, user, onNotifPostClick }: { tab: 
       }} />}
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
         {/* Row 1 — Logo centred, icons pinned right */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "10px 16px 6px", position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "10px 16px 8px", position: "relative" }}>
           <img src="/civic.svg" alt="Civic" style={{ height: 35, objectFit: "contain", display: "block" }} />
           <div style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 4, alignItems: "center" }}>
             <NotifBell userId={myId} onClick={() => setShowNotifs(v => !v)} />
@@ -2667,9 +2667,9 @@ export function CommunityHeader({ tab, setTab, user, onNotifPostClick }: { tab: 
           </div>
         </div>
         {/* Row 2 — subtitle */}
-        <div style={{ padding: "6px 16px 10px", textAlign: "left" }}>
+        {/*<div style={{ padding: "6px 16px 10px", textAlign: "left" }}>
           <div style={{ fontSize: 11, color: C.sub }}>Trouvez vos partenaires, co-fondateurs, collaborateurs</div>
-        </div>
+        </div>*/}
         <div style={{ display: "flex" }}>
           {([["all", "Tous les posts"], ["mine", "Mes posts"]] as const).map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} style={{ flex: 1, padding: "10px 0", background: "none", border: "none", cursor: "pointer", fontSize: 14, fontWeight: tab === id ? 700 : 400, color: tab === id ? C.text : C.sub, borderBottom: `2px solid ${tab === id ? C.gold : "transparent"}`, fontFamily: "var(--f-sans)", transition: "color .15s, border-color .15s", WebkitTapHighlightColor: "transparent" }}>{label}</button>
