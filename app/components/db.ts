@@ -241,15 +241,41 @@ export async function fetchUserPhotos(userIds: string[]): Promise<Record<string,
   return map;
 }
 
-export async function loadPosts(): Promise<DBPost[]> {
+export async function loadPosts(before?: string): Promise<DBPost[]> {
   if (!DB_READY || !supabase) return [];
-  const { data, error } = await supabase
+  let q = supabase
     .from("civique_posts")
-    .select("*")
+    .select("id, author_id, author_nom, author_prenom, author_tag, author_color, author_badge, body, imgs, time_label, created_at, likes, reposts, views, comment_count, quoted_post, audience")
     .order("created_at", { ascending: false })
-    .limit(50);
+    .limit(30);
+  if (before) q = q.lt("created_at", before);
+  const { data, error } = await q;
   if (error) { console.error("loadPosts:", error.message); return []; }
   return (data ?? []) as DBPost[];
+}
+
+// ── Upload a post image to Supabase Storage, returns public URL ──
+// Images stored as URLs instead of base64 — dramatically reduces DB row size and egress.
+// Bucket: "post-images" (create it in Supabase dashboard, set public)
+export async function uploadPostImage(dataUrl: string, postId: string, idx: number): Promise<string | null> {
+  if (!DB_READY || !supabase) return null;
+  try {
+    // Convert base64 data URL to Blob
+    const res   = await fetch(dataUrl);
+    const blob  = await res.blob();
+    const ext   = blob.type === "image/png" ? "png" : blob.type === "image/gif" ? "gif" : "jpg";
+    const path  = `posts/${postId}_${idx}.${ext}`;
+    const { error } = await supabase.storage.from("post-images").upload(path, blob, {
+      contentType: blob.type,
+      upsert: true,
+    });
+    if (error) { console.error("uploadPostImage:", error.message); return null; }
+    const { data } = supabase.storage.from("post-images").getPublicUrl(path);
+    return data.publicUrl;
+  } catch (e) {
+    console.error("uploadPostImage:", e);
+    return null;
+  }
 }
 
 // ── Audience fan-out ──────────────────────────────────────────
@@ -388,11 +414,12 @@ export async function loadComments(postId: string): Promise<DBComment[]> {
   if (!DB_READY || !supabase) return [];
   const { data, error } = await supabase
     .from("civique_comments")
-    .select("*")
+    .select("id, post_id, author_id, author_nom, author_prenom, author_tag, author_color, author_badge, body, time_label, created_at, likes, dislikes")
     .eq("post_id", postId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .limit(100);
   if (error) { console.error("loadComments:", error.message); return []; }
-  return (data ?? []) as DBComment[];
+  return (data ?? []).map(r => ({ ...r, imgs: [] })) as DBComment[];
 }
 
 export async function insertComment(comment: DBComment): Promise<void> {
@@ -481,9 +508,10 @@ export async function loadConversations(userId: string): Promise<DBConversation[
   if (!DB_READY || !supabase) return [];
   const { data, error } = await supabase
     .from("civique_conversations")
-    .select("*")
+    .select("id, user_a, user_b, last_msg, last_at, unread_a, unread_b")
     .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-    .order("last_at", { ascending: false });
+    .order("last_at", { ascending: false })
+    .limit(50);
   if (error) { console.error("loadConversations:", error.message); return []; }
   return (data ?? []) as DBConversation[];
 }
@@ -661,7 +689,7 @@ export async function loadNotifs(userId: string, limit = 50): Promise<DBNotif[]>
   if (!DB_READY || !supabase) return [];
   const { data, error } = await supabase
     .from("civique_notifications")
-    .select("*")
+    .select("id, user_id, from_id, body, type, read, created_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(limit);

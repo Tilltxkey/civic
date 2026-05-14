@@ -408,7 +408,7 @@ function AppShell({
         {/* ── Tab headers ── */}
         {activeTab === "vote"      && <Header user={user} />}
         {activeTab === "results"   && <ThesesHeader user={user} />}
-        {activeTab === "community" && <CommunityHeader tab={communityFeed} setTab={setCommunityFeed} user={user} />}
+        {/* CommunityHeader is now inside CommunityTab's scroll container — scrolls with feed like X */}
 
         {/* Scrollable content */}
         <div id="main-scroll" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", background: C.bg }}>
@@ -434,6 +434,7 @@ function AppShell({
             <CommunityTab
               key={composePrefill || "community"}
               feedTab={communityFeed}
+              setFeedTab={setCommunityFeed}
               currentUser={user}
               autoOpenCompose={!!composePrefill}
               composePrefill={composePrefill}

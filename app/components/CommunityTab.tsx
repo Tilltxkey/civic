@@ -3,13 +3,30 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import ReactDOM from "react-dom";
 import type { UserProfile } from "./AuthFlow";
-import { loadPosts, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushNotif, parseNotifBody, fanOutAudienceNotifs, loadNotifs, deleteNotif, clearAllNotifs, subscribeNotifs, type DBPost, type DBComment, type DBNotif } from "./db";
+import { loadPosts, uploadPostImage, insertPost, deletePost as dbDeletePost, insertComment, loadComments, incrementCommentCount, incrementViews, deltaPostLikes, deltaPostReposts, deltaCommentLikes, subscribePostChanges, subscribeCommentChanges, fetchUserPhotos, loadConversations, subscribeConversations, pushNotif, parseNotifBody, fanOutAudienceNotifs, loadNotifs, deleteNotif, clearAllNotifs, subscribeNotifs, type DBPost, type DBComment, type DBNotif } from "./db";
 import { MessagesScreen } from "./MessagesTab";
 import { useC } from "./tokens";
 import { useLang } from "./LangContext";
 import { useTheme } from "./ThemeContext";
 import { AppMenu } from "./AppMenu";
 import { useProfile } from "./ProfileContext";
+
+// ── Shared image upload helper ────────────────────────────────
+// Uploads a file to Supabase Storage and returns the public URL.
+// Falls back to base64 data URL if Storage upload fails.
+async function uploadImgFile(file: File, maxImgs: number, current: string[]): Promise<string | null> {
+  if (current.length >= maxImgs) return null;
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      const dataUrl = ev.target?.result as string;
+      const tempId  = `img_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const url     = await uploadPostImage(dataUrl, tempId, current.length);
+      resolve(url ?? dataUrl); // fallback to base64 if upload fails
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -872,11 +889,11 @@ function RepostSheet({ post, me, profilePic, isReposted, onClose, onSimpleRepost
 
   const canPost = (text.trim().length > 0 || imgs.length > 0) && text.length <= MAX;
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => setImgs(prev => [...prev, ev.target?.result as string].slice(0, 1));
-    reader.readAsDataURL(file); e.target.value = "";
+    e.target.value = "";
+    const url = await uploadImgFile(file, 1, imgs);
+    if (url) setImgs(prev => [...prev, url].slice(0, 1));
   };
 
   const submitQuote = () => {
@@ -1276,11 +1293,11 @@ function ReplyScreen({ post, onClose, onSubmit, me = { id: "", name: "Moi", hand
     onSubmit(text.trim(), imgs.length > 0 ? imgs : undefined);
   };
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => setImgs(prev => [...prev, ev.target?.result as string].slice(0, 1));
-    reader.readAsDataURL(file); e.target.value = "";
+    e.target.value = "";
+    const url = await uploadImgFile(file, 1, imgs);
+    if (url) setImgs(prev => [...prev, url].slice(0, 1));
   };
 
   return (
@@ -1833,11 +1850,11 @@ function InlineCompose({ me, profilePic = null, onPost }: {
   const CIRC      = 2 * Math.PI * 11;
   const imgsFull  = imgs.length >= MAX_IMGS;
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => setImgs(prev => [...prev, ev.target?.result as string].slice(0, MAX_IMGS));
-    reader.readAsDataURL(file); e.target.value = "";
+    e.target.value = "";
+    const url = await uploadImgFile(file, MAX_IMGS, imgs);
+    if (url) setImgs(prev => [...prev, url].slice(0, MAX_IMGS));
   };
 
   const submit = () => {
@@ -2070,11 +2087,11 @@ function ComposeModal({ onClose, onPost, me, profilePic = null, initialText = ""
   const CIRC      = 2 * Math.PI * 11;
   const imgsFull  = imgs.length >= MAX_IMGS;
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => setImgs(prev => [...prev, ev.target?.result as string].slice(0, MAX_IMGS));
-    reader.readAsDataURL(file); e.target.value = "";
+    e.target.value = "";
+    const url = await uploadImgFile(file, MAX_IMGS, imgs);
+    if (url) setImgs(prev => [...prev, url].slice(0, MAX_IMGS));
   };
 
   return (
@@ -2652,16 +2669,14 @@ export function CommunityHeader({ tab, setTab, user, onNotifPostClick }: { tab: 
     <>
       {showNotifs && <NotifSheet userId={myId} onClose={() => setShowNotifs(false)} onPostClick={postId => {
         setShowNotifs(false);
-        // Dispatch custom event — CommunityTab listens even if it's a sibling
         window.dispatchEvent(new CustomEvent("civique:openPost", { detail: postId }));
-        // Also call prop if wired by app shell
         onNotifPostClick?.(postId);
       }} />}
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}` }}>
         {/* Row 1 — Logo centred, icons pinned right */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "10px 16px 8px", position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "20px 16px 15px", position: "relative" }}>
           <img src="/civic.svg" alt="Civic" style={{ height: 35, objectFit: "contain", display: "block" }} />
-          <div style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 4, alignItems: "center" }}>
+          <div style={{ position: "absolute", right: 16, top: "43%", transform: "translateY(-50%)", display: "flex", gap: 20, alignItems: "center" }}>
             <NotifBell userId={myId} onClick={() => setShowNotifs(v => !v)} />
             <AppMenu user={user} />
           </div>
@@ -2682,7 +2697,7 @@ export function CommunityHeader({ tab, setTab, user, onNotifPostClick }: { tab: 
 
 // ── CommunityTab ──────────────────────────────────────────────
 
-export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, composePrefill = "", onComposeClosed }: { feedTab: "all" | "mine"; currentUser?: UserProfile; autoOpenCompose?: boolean; composePrefill?: string; onComposeClosed?: () => void }) {
+export function CommunityTab({ feedTab, setFeedTab, currentUser, autoOpenCompose = false, composePrefill = "", onComposeClosed }: { feedTab: "all" | "mine"; setFeedTab?: (t: "all"|"mine") => void; currentUser?: UserProfile; autoOpenCompose?: boolean; composePrefill?: string; onComposeClosed?: () => void }) {
   const C = useC();
   const { profilePic, user: ctxUser } = useProfile();
 
@@ -2838,17 +2853,95 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
 
     return unsub;
   }, [uid]);
-  const [fabVisible, setFabVisible]  = useState(true);
-  const lastScrollY = useRef(0);
-  const nextId = useRef(100);
+  const headerRef       = useRef<HTMLDivElement>(null);
+  const headerSpacerRef = useRef<HTMLDivElement>(null);
+  const fabRef          = useRef<HTMLButtonElement>(null);
+  const sentinelRef     = useRef<HTMLDivElement>(null);
+  const lastScrollY     = useRef(0);
+  const nextId         = useRef(100);
+  const [loadingMore,  setLoadingMore]  = useState(false);
+  const oldestCreatedAt = useRef<string | undefined>(undefined);
+
+  // Track oldest post for cursor pagination
+  useEffect(() => {
+    if (posts.length > 0) {
+      const sorted = [...posts].sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+      oldestCreatedAt.current = (sorted[0] as any).createdAt ?? undefined;
+    }
+  }, [posts]);
+
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore || !oldestCreatedAt.current) return;
+    setLoadingMore(true);
+    const lp = loadSet(uid, "likedPosts");
+    const rp = loadSet(uid, "repostedPosts");
+    const rows = await loadPosts(oldestCreatedAt.current);
+    if (rows.length > 0) {
+      const existingIds = new Set(posts.map(p => p.id));
+      const newPosts = rows.filter(r => !existingIds.has(r.id)).map(r => dbToPost(r, lp, rp));
+      if (newPosts.length > 0) {
+        setPosts(prev => [...prev, ...newPosts]);
+        fetchUserPhotos([...new Set(rows.map(r => r.author_id))]).then(p => setPhotoCache(c => ({ ...c, ...p })));
+      }
+    }
+    setLoadingMore(false);
+  }, [loadingMore, posts, uid]);
+
+  // ── IntersectionObserver: fires handleLoadMore as soon as the sentinel
+  //    div scrolls into view — no force-scroll needed, auto-triggers
+  //    as the user naturally approaches the end of the feed.
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      entries => { if (entries[0].isIntersecting) handleLoadMore(); },
+      { threshold: 0.1 }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [handleLoadMore]);
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const y = (e.target as HTMLDivElement).scrollTop;
-    if (y < 60) { setFabVisible(true); }
-    else if (y > lastScrollY.current + 8) { setFabVisible(false); }
-    else if (y < lastScrollY.current - 8) { setFabVisible(true); }
+    const el = e.target as HTMLDivElement;
+    const y  = el.scrollTop;
+
+    // ── Header: position:fixed, driven via DOM ref — no React re-renders.
+    // translateY only (no opacity) so there's zero delay on either direction.
+    // Threshold is tight (4px) so it responds on the very first scroll event.
+    if (headerRef.current) {
+      if (y < 4) {
+        // At the very top — always show, snap instantly
+        headerRef.current.style.transform = "translateY(0)";
+        // Also reset spacer in case it drifted
+        if (headerSpacerRef.current)
+          headerSpacerRef.current.style.height = headerRef.current.offsetHeight + "px";
+      } else if (y > lastScrollY.current + 4) {
+        // Scrolling DOWN → hide header (slide up off-screen)
+        headerRef.current.style.transform = "translateY(-100%)";
+      } else if (y < lastScrollY.current - 4) {
+        // Scrolling UP → show header immediately
+        headerRef.current.style.transform = "translateY(0)";
+      }
+    }
+
+    // ── FAB: exact original logic from old code — absolute-position threshold,
+    //         driven via DOM ref for zero re-renders and instant response.
+    if (fabRef.current) {
+      const show = y < 60 || y < lastScrollY.current - 8;
+      const hide = y > lastScrollY.current + 8 && y >= 60;
+      if (show) {
+        fabRef.current.style.opacity       = "1";
+        fabRef.current.style.transform     = "translateY(0) scale(1)";
+        fabRef.current.style.pointerEvents = "auto";
+      } else if (hide) {
+        fabRef.current.style.opacity       = "0";
+        fabRef.current.style.transform     = "translateY(16px) scale(0.85)";
+        fabRef.current.style.pointerEvents = "none";
+      }
+    }
+
     lastScrollY.current = y;
-  }, []);
+  }, [handleLoadMore]);
 
   // ── Apply ranking algorithm on "all" tab; "mine" stays chronological
   const { field: vField, year: vYear } = viewerCtx(currentUser);
@@ -3174,10 +3267,75 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
     {showCompose && <ComposeModal me={ME_LIVE} profilePic={profilePic} initialText={composeDraft} userField={currentUser?.field ?? ""} userFaculty={normFac(currentUser?.faculty)} userRole={currentUser?.role ?? ""} userYear={currentUser?.year ?? 1} onClose={() => { setShowCompose(false); setComposeDraft(""); onComposeClosed?.(); }} onPost={(text, imgs, audience, knownIds) => { addPost(text, imgs, audience, knownIds); setShowCompose(false); setComposeDraft(""); }} />}
     <div onScroll={handleScroll} style={{ background: C.bg, minHeight: "100%", overflowY: "auto", height: "100%" }}>
 
-      {/* InlineCompose intentionally removed — use the FAB (+ button) to compose */}
+      {/* ── Header: position:fixed so it floats above the scroll container.
+           A spacer div with the same height keeps the first post from sliding
+           under it. The spacer ref is updated on mount via a callback ref.
+           translateY is driven imperatively — no React re-renders, no opacity
+           (opacity causes a perceptible delay; translateY alone is instant). ── */}
+      <div ref={headerRef} style={{
+        position: "fixed", top: 0, left: 0, right: 0, zIndex: 30,
+        transition: "transform .18s cubic-bezier(.4,0,.2,1)",
+        willChange: "transform",
+      }}>
+        <CommunityHeader tab={feedTab} setTab={setFeedTab ?? (() => {})} user={currentUser} />
+      </div>
+      {/* Spacer — same height as the fixed header so content starts below it */}
+      <div ref={el => {
+        (headerSpacerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+        if (el && headerRef.current) el.style.height = headerRef.current.offsetHeight + "px";
+      }} aria-hidden="true" />
 
       {loading ? (
-        <div style={{ textAlign: "center", padding: "48px 24px", color: C.dim, fontSize: 14 }}>Chargement…</div>
+        /* ── Post-card skeletons — mirrors the real PostCard layout ── */
+        <>
+          <style>{`
+            @keyframes civSkimmer {
+              0%   { background-position: -400px 0; }
+              100% { background-position:  400px 0; }
+            }
+          `}</style>
+          {[1,2,3,4,5].map(i => {
+            const shimmer: React.CSSProperties = {
+              background: `linear-gradient(90deg, ${C.border}55 25%, ${C.border}99 50%, ${C.border}55 75%)`,
+              backgroundSize: "800px 100%",
+              animation: `civSkimmer 1.5s ease-in-out ${(i - 1) * 0.09}s infinite`,
+              borderRadius: 6,
+            };
+            return (
+              <div key={i} style={{
+                background: C.surface,
+                borderBottom: `1px solid ${C.border}`,
+                padding: "14px 16px 12px",
+              }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  {/* Avatar circle */}
+                  <div style={{ ...shimmer, width: 44, height: 44, borderRadius: "50%", flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Name + timestamp */}
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                      <div style={{ ...shimmer, height: 12, width: "38%" }} />
+                      <div style={{ ...shimmer, height: 10, width: "14%", opacity: .7 }} />
+                    </div>
+                    {/* Tag line */}
+                    <div style={{ ...shimmer, height: 9, width: "22%", marginBottom: 12, opacity: .6 }} />
+                    {/* Body lines */}
+                    <div style={{ ...shimmer, height: 12, width: "100%", marginBottom: 7 }} />
+                    <div style={{ ...shimmer, height: 12, width: i % 2 === 0 ? "88%" : "76%", marginBottom: 7 }} />
+                    {i % 3 !== 0 && (
+                      <div style={{ ...shimmer, height: 12, width: "60%", marginBottom: 7 }} />
+                    )}
+                    {/* Action bar */}
+                    <div style={{ display: "flex", gap: 28, marginTop: 14 }}>
+                      {[30, 28, 26, 22].map((w, j) => (
+                        <div key={j} style={{ ...shimmer, height: 10, width: w, opacity: .5 }} />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </>
       ) : feed.length === 0 ? (
         <div style={{ textAlign: "center", padding: "48px 24px", color: C.dim, fontSize: 14 }}>Aucune publication pour l'instant.</div>
       ) : feed.map(post => (
@@ -3199,19 +3357,55 @@ export function CommunityTab({ feedTab, currentUser, autoOpenCompose = false, co
           />
         </div>
       ))}
+      {/* Sentinel — observed by IntersectionObserver to auto-trigger load-more */}
+      <div ref={sentinelRef} style={{ height: 1 }} />
+
+      {/* Load-more spinner — smooth conic/dashoffset arc */}
+      {loadingMore && (
+        <div style={{
+          display: "flex", justifyContent: "center", alignItems: "center",
+          padding: "18px 0 12px",
+        }}>
+          <style>{`
+            @keyframes civSpin {
+              to { transform: rotate(360deg); }
+            }
+            @keyframes civSpinnerDash {
+              0%   { stroke-dashoffset: 60; }
+              50%  { stroke-dashoffset: 15; }
+              100% { stroke-dashoffset: 60; }
+            }
+          `}</style>
+          <svg
+            width="30" height="30" viewBox="0 0 30 30" fill="none"
+            style={{ animation: "civSpin .9s linear infinite" }}
+          >
+            {/* Track */}
+            <circle cx="15" cy="15" r="11" stroke={C.border} strokeWidth="2.5" />
+            {/* Arc — dashoffset animates for the "growing/shrinking" feel */}
+            <circle
+              cx="15" cy="15" r="11"
+              stroke={C.blue}
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeDasharray="69"
+              style={{ animation: "civSpinnerDash 1.4s ease-in-out infinite" }}
+            />
+          </svg>
+        </div>
+      )}
+
       <div style={{ height: 80 }} />
 
-      {/* FAB — always visible */}
-      <button onClick={() => setShowCompose(true)} style={{
+      {/* FAB — visibility driven via fabRef, zero re-renders */}
+      <button ref={fabRef} onClick={() => setShowCompose(true)} style={{
         position: "fixed", bottom: 78, right: 20,
         width: 56, height: 56, borderRadius: "50%",
         background: C.gold, border: "none", cursor: "pointer",
         display: "flex", alignItems: "center", justifyContent: "center",
         boxShadow: "0 4px 16px rgba(196,127,0,.45)", zIndex: 20,
         WebkitTapHighlightColor: "transparent",
-        opacity: fabVisible ? 1 : 0,
-        transform: fabVisible ? "translateY(0) scale(1)" : "translateY(16px) scale(0.85)",
-        pointerEvents: fabVisible ? "auto" : "none",
+        opacity: 1, transform: "translateY(0) scale(1)", pointerEvents: "auto",
         transition: "opacity .22s ease, transform .22s ease",
       }}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" strokeWidth="2.2" strokeLinecap="round"/></svg>

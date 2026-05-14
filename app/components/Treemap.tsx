@@ -881,8 +881,8 @@ export function ThesesHeader({ user }: { user?: import("./AuthFlow").UserProfile
   return (
     <div style={{
       background: C.surface,
-      borderBottom: `1px solid ${C.border}`,
-      padding: "10px 16px 12px",
+      borderBottom: `none`,
+      padding: "10px 16px 0px",
       flexShrink: 0,
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
@@ -1265,20 +1265,56 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
       {/* ── Scrollable list ── */}
       <div style={{ flex: 1, overflowY: "auto" }}>
 
-        {/* Loading skeleton */}
-        {loading && [1,2,3,4,5].map(i => (
-          <div key={i} style={{
-            display: "flex", gap: 14, alignItems: "flex-start",
-            padding: "14px 16px", borderBottom: `1px solid ${C.border}`,
-            background: C.surface, marginBottom: 1,
-          }}>
-            <div style={{ width: 52, height: 68, borderRadius: 6, background: C.border2, flexShrink: 0, opacity: .45 }} />
-            <div style={{ flex: 1 }}>
-              <div style={{ height: 13, borderRadius: 6, background: C.border2, marginBottom: 8, width: "72%", opacity: .45 }} />
-              <div style={{ height: 11, borderRadius: 6, background: C.border2, width: "42%", opacity: .35 }} />
-            </div>
-          </div>
-        ))}
+        {/* Loading skeleton — shimmer version matching real thesis card layout */}
+        {loading && (
+          <>
+            <style>{`
+              @keyframes thesisSkimmer {
+                0%   { background-position: -400px 0; }
+                100% { background-position:  400px 0; }
+              }
+              @keyframes thesisSpin { to { transform: rotate(360deg); } }
+              @keyframes thesisSpinnerDash {
+                0%   { stroke-dashoffset: 60; }
+                50%  { stroke-dashoffset: 15; }
+                100% { stroke-dashoffset: 60; }
+              }
+            `}</style>
+            {[1,2,3,4,5,6].map(i => {
+              const shimmer: React.CSSProperties = {
+                background: `linear-gradient(90deg, ${C.border}55 25%, ${C.border}99 50%, ${C.border}55 75%)`,
+                backgroundSize: "800px 100%",
+                animation: `thesisSkimmer 1.5s ease-in-out ${(i - 1) * 0.09}s infinite`,
+                borderRadius: 6,
+              };
+              return (
+                <div key={i} style={{
+                  display: "flex", gap: 14, alignItems: "flex-start",
+                  padding: "14px 16px", borderBottom: `1px solid ${C.border}`,
+                  background: C.surface,
+                }}>
+                  {/* Cover block */}
+                  <div style={{ ...shimmer, width: 52, height: 68, borderRadius: 6, flexShrink: 0 }} />
+                  {/* Content */}
+                  <div style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
+                    {/* Title — two lines */}
+                    <div style={{ ...shimmer, height: 13, width: i % 2 === 0 ? "82%" : "70%", marginBottom: 7 }} />
+                    <div style={{ ...shimmer, height: 13, width: i % 3 === 0 ? "55%" : "44%", marginBottom: 10 }} />
+                    {/* Author */}
+                    <div style={{ ...shimmer, height: 11, width: "38%", marginBottom: 8, opacity: .7 }} />
+                    {/* Faculty badge pill */}
+                    <div style={{ ...shimmer, height: 16, width: 56, borderRadius: 99, opacity: .5 }} />
+                  </div>
+                  {/* Right col: date + star */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12, flexShrink: 0, paddingTop: 2 }}>
+                    <div style={{ ...shimmer, height: 10, width: 32, opacity: .5 }} />
+                    <div style={{ ...shimmer, width: 18, height: 18, borderRadius: "50%", opacity: .4 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
 
         {/* Empty state */}
         {!loading && results.length === 0 && (
@@ -1360,6 +1396,19 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
             </div>
           </div>
         ))}
+
+        {/* Blue spinner — shown while more theses load (future load-more) */}
+        {loading && (
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", padding: "20px 0" }}>
+            <svg width="30" height="30" viewBox="0 0 30 30" fill="none"
+              style={{ animation: "thesisSpin .9s linear infinite" }}>
+              <circle cx="15" cy="15" r="11" stroke={C.border} strokeWidth="2.5" />
+              <circle cx="15" cy="15" r="11" stroke={C.blue} strokeWidth="2.5"
+                strokeLinecap="round" strokeDasharray="69"
+                style={{ animation: "thesisSpinnerDash 1.4s ease-in-out infinite" }} />
+            </svg>
+          </div>
+        )}
 
         {/* Bottom spacer */}
         <div style={{ height: NAV_H + 16 }} />
