@@ -322,6 +322,7 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
   const [open,       setOpen]       = useState(false);
   const [langOpen,   setLangOpen]   = useState(false);
   const [notifs,     setNotifs]     = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
   const [pushToast,  setPushToast]  = useState<string | null>(null);
   const [photoSheet, setPhotoSheet] = useState(false);
   const [cropSrc,    setCropSrc]    = useState<string | null>(null);
@@ -348,53 +349,79 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
 
   // ── Toggle push subscription ───────────────────────────────
   const handleNotifToggle = useCallback(async () => {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    if (!("Notification" in window)) {
       setPushToast("Les notifications ne sont pas supportées sur cet appareil.");
       return;
     }
+    if (pushLoading) return;
+    setPushLoading(true);
 
-    if (notifs) {
-      // — Unsubscribe —
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
-        if (sub) await sub.unsubscribe();
+    try {
+      if (notifs) {
+        // — Unsubscribe —
+        if ("serviceWorker" in navigator) {
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.getSubscription();
+          if (sub) await sub.unsubscribe();
+        }
         setNotifs(false);
         setPushToast("Notifications désactivées. Vous ne recevrez plus d'alertes Civic.");
-      } catch {
-        setPushToast("Impossible de désactiver les notifications.");
-      }
-    } else {
-      // — Subscribe —
-      try {
-        const permission = await Notification.requestPermission();
+      } else {
+        // — Subscribe —
+        const permission = Notification.permission === "granted"
+          ? "granted"
+          : await Notification.requestPermission();
+
         if (permission !== "granted") {
           setPushToast("Permission refusée. Activez les notifications dans les paramètres de votre navigateur.");
           return;
         }
-        const reg = await navigator.serviceWorker.ready;
-        const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!;
-        const padding  = "=".repeat((4 - (vapidKey.length % 4)) % 4);
-        const base64   = (vapidKey + padding).replace(/-/g, "+").replace(/_/g, "/");
-        const rawData  = window.atob(base64);
-        const arr      = Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
-        const key      = arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength) as ArrayBuffer;
-        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+
+        // Register SW if not yet registered (works on localhost too)
+        const reg = "serviceWorker" in navigator
+          ? await navigator.serviceWorker.register("/sw.js").then(() => navigator.serviceWorker.ready)
+          : null;
+
+        if (!reg) {
+          setPushToast("Service worker non disponible.");
+          return;
+        }
+
+        const vapidKey = (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? "").replace(/\s/g, "");
+        if (!vapidKey) throw new Error("VAPID key missing");
+
+        const padding = "=".repeat((4 - (vapidKey.length % 4)) % 4);
+        const base64  = (vapidKey + padding).replace(/-/g, "+").replace(/_/g, "/");
+        const binary  = window.atob(base64);
+        const key     = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) key[i] = binary.charCodeAt(i);
+
+        // Unsubscribe existing first to avoid DuplicateSubscriptionError
+        const existing = await reg.pushManager.getSubscription();
+        if (existing) await existing.unsubscribe();
+
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly:      true,
+          applicationServerKey: key,
+        });
+
         if (uid) await savePushSubscription(uid, JSON.stringify(sub));
         setNotifs(true);
         setPushToast("Notifications activées. Vous recevrez désormais les alertes des élections et de la communauté Civic.");
-        // Fire a real native push as confirmation
         sendPush(
           "Notifications activées",
           "Vous recevrez désormais les alertes Civic — élections, candidatures et actualités de votre promotion.",
           [uid],
           { tag: "notif-activated" }
         );
-      } catch {
-        setPushToast("Impossible d'activer les notifications.");
       }
+    } catch (e) {
+      console.error("push toggle error:", e);
+      setPushToast("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setPushLoading(false);
     }
-  }, [notifs, uid]);
+  }, [notifs, pushLoading, uid]);
 
   const darkMode = theme === "dark";
   const LANG_LABELS: Record<string, string> = { fr: "Français", ht: "Kreyòl" };
@@ -511,8 +538,8 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
                 <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.sub} strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
               <span style={{ fontSize: 14, color: C.text }}>{t("menu.notifications")}</span>
-              <div style={{ marginLeft: "auto" }} onClick={handleNotifToggle}>
-                <div style={{ width: 42, height: 24, borderRadius: 99, background: notifs ? C.gold : C.border2, position: "relative", transition: "background .2s", cursor: "pointer" }}>
+              <div style={{ marginLeft: "auto", opacity: pushLoading ? 0.5 : 1, transition: "opacity .2s" }} onClick={handleNotifToggle}>
+                <div style={{ width: 42, height: 24, borderRadius: 99, background: pushLoading ? C.border2 : notifs ? C.gold : C.border2, position: "relative", transition: "background .2s", cursor: pushLoading ? "wait" : "pointer" }}>
                   <div style={{ position: "absolute", top: 3, left: notifs ? 21 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,.2)", transition: "left .2s" }} />
                 </div>
               </div>
