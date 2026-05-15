@@ -101,7 +101,7 @@ export async function signInUser(
 
   const { data, error } = await supabase
     .from("civique_users")
-    .select("*")
+    .select("id, matricule, nom, prenom, sexe, faculty, field, year, vacation, role, role_detail, profile_photo, status, avatar_color, badge, created_at_iso")
     .eq("matricule", matricule.trim())
     .maybeSingle();
 
@@ -127,7 +127,7 @@ export async function getUserById(
 
   const { data, error } = await supabase
     .from("civique_users")
-    .select("*")
+    .select("id, matricule, nom, prenom, sexe, faculty, field, year, vacation, role, role_detail, profile_photo, status, avatar_color, badge, created_at_iso")
     .eq("id", id)
     .maybeSingle();
 
@@ -152,7 +152,7 @@ export function pollUserStatus(
     if (stopped) return;
     const { data, error } = await supabase!
       .from("civique_users")
-      .select("*")
+      .select("status, badge, role, role_detail")
       .eq("id", userId)
       .maybeSingle();
 
@@ -162,7 +162,8 @@ export function pollUserStatus(
     const status = data.status as string;
     if (status === "verified" || status === "rejected" || status === "banned") {
       stopped = true;
-      onResult(status as "verified" | "rejected" | "banned", fromRow(data));
+      const { user } = await getUserById(userId);
+      if (user) onResult(status as "verified" | "rejected" | "banned", user);
     }
   };
 
@@ -433,11 +434,36 @@ export async function updateCommentStats(id: string, likes: number, dislikes: nu
   await supabase.from("civique_comments").update({ likes, dislikes }).eq("id", id);
 }
 
-export async function updateUserPhoto(userId: string, photoUrl: string): Promise<void> {
+// ── Upload avatar to Supabase Storage, returns public URL ────
+// Bucket: "avatars" (create in Supabase dashboard, set public)
+export async function uploadAvatarImage(userId: string, dataUrl: string): Promise<string | null> {
+  if (!DB_READY || !supabase) return null;
+  try {
+    const res  = await fetch(dataUrl);
+    const blob = await res.blob();
+    const ext  = blob.type === "image/png" ? "png" : "jpg";
+    const path = `${userId}.${ext}`;
+    const { error } = await supabase.storage.from("avatars").upload(path, blob, {
+      contentType: blob.type,
+      upsert: true, // overwrite previous avatar
+    });
+    if (error) { console.error("uploadAvatarImage:", error.message); return null; }
+    // Add cache-busting param so browsers pick up the new photo
+    const { data } = supabase.storage.from("avatars").getPublicUrl(path);
+    return `${data.publicUrl}?t=${Date.now()}`;
+  } catch (e) {
+    console.error("uploadAvatarImage:", e);
+    return null;
+  }
+}
+
+export async function updateUserPhoto(userId: string, dataUrl: string): Promise<void> {
   if (!DB_READY || !supabase) return;
+  // Upload to Storage first, fall back to storing dataUrl if upload fails
+  const url = await uploadAvatarImage(userId, dataUrl);
   const { error } = await supabase
     .from("civique_users")
-    .update({ profile_photo: photoUrl })
+    .update({ profile_photo: url ?? dataUrl })
     .eq("id", userId);
   if (error) console.error("[Civique] updateUserPhoto:", error.message);
 }
@@ -536,9 +562,10 @@ export async function loadMessages(convId: string): Promise<DBMessage[]> {
   if (!DB_READY || !supabase) return [];
   const { data, error } = await supabase
     .from("civique_messages")
-    .select("*")
+    .select("id, conversation_id, from_id, body, created_at")
     .eq("conversation_id", convId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .limit(200);
   if (error) { console.error("loadMessages:", error.message); return []; }
   return (data ?? []) as DBMessage[];
 }
@@ -745,4 +772,49 @@ export function pushLocalNotif(userId: string, notif: { id: string; body: string
 export async function updateUserBadge(userId: string, badge: "gold" | "blue" | "gray" | null): Promise<void> {
   if (!DB_READY || !supabase) return;
   await supabase.from("civique_users").update({ badge }).eq("id", userId);
+}
+
+
+// ── Push notification subscriptions ──────────────────────────
+// Paste these at the bottom of your existing db.ts
+
+/** Save a user's push subscription to DB (upsert by user_id). */
+export async function savePushSubscription(userId: string, subscription: string): Promise<void> {
+  if (!DB_READY || !supabase) return;
+  const { error } = await supabase
+    .from("civique_push_subscriptions")
+    .upsert(
+      { user_id: userId, subscription, updated_at: new Date().toISOString() },
+      { onConflict: "user_id" }
+    );
+  if (error) console.error("savePushSubscription:", error.message);
+}
+
+/** Send a push notification via the /api/push route.
+ *
+ *  Examples:
+ *    // Broadcast to all (election start)
+ *    sendPush("🗳️ Élections ouvertes", "Les candidatures sont maintenant ouvertes !");
+ *
+ *    // Target specific users
+ *    sendPush("⏰ Rappel", "N'oubliez pas de voter !", [userId1, userId2]);
+ */
+export async function sendPush(
+  title:    string,
+  body:     string,
+  userIds?: string[],
+  options?: { tag?: string; data?: Record<string, unknown>; icon?: string }
+): Promise<void> {
+  try {
+    await fetch("/api/push", {
+      method:  "POST",
+      headers: {
+        "Content-Type":   "application/json",
+        "x-civic-secret": process.env.NEXT_PUBLIC_CIVIC_PUSH_SECRET ?? "",
+      },
+      body: JSON.stringify({ title, body, userIds, ...options }),
+    });
+  } catch (err) {
+    console.error("sendPush:", err);
+  }
 }

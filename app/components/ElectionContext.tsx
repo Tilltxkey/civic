@@ -142,7 +142,7 @@ export function ElectionProvider({
     if (!category || !DB_READY || !supabase) { setLoading(false); return; }
     const { data: elData } = await supabase
       .from("civique_elections")
-      .select("*")
+      .select("id, category, status, mode, active_post_id, open_posts, timers, inscription_ends_at, created_at, updated_at")
       .eq("category", category)
       .maybeSingle();
     if (elData) {
@@ -161,7 +161,7 @@ export function ElectionProvider({
       setElection(rec);
       const { data: cData } = await supabase
         .from("civique_candidates")
-        .select("*")
+        .select("id, user_id, post_id, user_name, user_sexe, election_id, badge, created_at")
         .eq("election_id", elData.id);
       setCandidates((cData ?? []).map(r => ({
         id:         r.id,
@@ -176,7 +176,7 @@ export function ElectionProvider({
       if (user) {
         const { data: vData } = await supabase
           .from("civique_votes")
-          .select("*")
+          .select("id, voter_id, candidate_id, post_id, election_id, created_at")
           .eq("election_id", elData.id)
           .eq("voter_id", user.id);
         setMyVotes((vData ?? []).map(r => ({
@@ -190,15 +190,15 @@ export function ElectionProvider({
       }
       const { data: allVData } = await supabase
         .from("civique_votes")
-        .select("*")
+        .select("candidate_id, post_id")
         .eq("election_id", elData.id);
       setAllVotes((allVData ?? []).map(r => ({
-        id:          r.id,
-        voterId:     r.voter_id,
+        id:          "",
+        voterId:     "",
         candidateId: r.candidate_id,
         postId:      r.post_id,
-        electionId:  r.election_id,
-        createdAt:   r.created_at,
+        electionId:  elData.id,
+        createdAt:   "",
       })));
       const [fac, fld, yr, vac] = elData.category.split("|");
       const { data: usersData } = await supabase
@@ -410,7 +410,7 @@ export function ElectionProvider({
 
     const { data: candData } = await supabase
       .from("civique_candidates")
-      .select("*")
+      .select("id, user_id, post_id, user_name, user_sexe, election_id, badge, created_at")
       .eq("election_id", el.id);
     if (!candData) return;
 

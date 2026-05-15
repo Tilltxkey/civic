@@ -1111,8 +1111,9 @@ function ThesesTab({ onTabChange, onOpenThesis }: { onTabChange: (t: "results"|"
     if (!supabase) { setLoading(false); return; }
     supabase
       .from("civique_books")
-      .select("*")
+      .select("id, title, author, date, pdf_url, cover_url, cover_color, faculty")
       .order("created_at", { ascending: false })
+      .limit(100)
       .then(({ data }) => {
         setTheses(
           (data ?? []).map((b: any) => ({

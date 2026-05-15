@@ -14,7 +14,7 @@ import { useLang } from "./LangContext";
 import { useTheme } from "./ThemeContext";
 import { useProfile } from "./ProfileContext";
 // SQL: ALTER TABLE civique_users ADD COLUMN IF NOT EXISTS profile_photo text;
-import { updateUserPhoto } from "./db";
+import { updateUserPhoto, savePushSubscription, sendPush } from "./db";
 
 // ─── localStorage key — must match page.tsx ───────────────────
 const SESSION_KEY = "civique_user_id";
@@ -321,11 +321,79 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
   const { theme, setTheme } = useTheme();
   const [open,       setOpen]       = useState(false);
   const [langOpen,   setLangOpen]   = useState(false);
-  const [notifs,     setNotifs]     = useState(true);
+  const [notifs,     setNotifs]     = useState(false);
+  const [pushToast,  setPushToast]  = useState<string | null>(null);
   const [photoSheet, setPhotoSheet] = useState(false);
   const [cropSrc,    setCropSrc]    = useState<string | null>(null);
   const { profilePic, setProfilePic, user: ctxUser, setUser: ctxSetUser } = useProfile();
   const fileRef = useRef<HTMLInputElement>(null);
+  const uid = ctxUser?.id ?? userProp?.id ?? "";
+
+  // ── Read real push permission state on mount ──────────────
+  useEffect(() => {
+    if (!("Notification" in window) || !("PushManager" in window)) return;
+    if (Notification.permission === "granted") {
+      navigator.serviceWorker.ready.then(reg =>
+        reg.pushManager.getSubscription().then(sub => setNotifs(!!sub))
+      );
+    }
+  }, []);
+
+  // ── Push toast auto-dismiss ────────────────────────────────
+  useEffect(() => {
+    if (!pushToast) return;
+    const t = setTimeout(() => setPushToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [pushToast]);
+
+  // ── Toggle push subscription ───────────────────────────────
+  const handleNotifToggle = useCallback(async () => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setPushToast("Les notifications ne sont pas supportées sur cet appareil.");
+      return;
+    }
+
+    if (notifs) {
+      // — Unsubscribe —
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+        setNotifs(false);
+        setPushToast("Notifications désactivées. Vous ne recevrez plus d'alertes Civic.");
+      } catch {
+        setPushToast("Impossible de désactiver les notifications.");
+      }
+    } else {
+      // — Subscribe —
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          setPushToast("Permission refusée. Activez les notifications dans les paramètres de votre navigateur.");
+          return;
+        }
+        const reg = await navigator.serviceWorker.ready;
+        const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!;
+        const padding  = "=".repeat((4 - (vapidKey.length % 4)) % 4);
+        const base64   = (vapidKey + padding).replace(/-/g, "+").replace(/_/g, "/");
+        const rawData  = window.atob(base64);
+        const key      = Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+        if (uid) await savePushSubscription(uid, JSON.stringify(sub));
+        setNotifs(true);
+        setPushToast("Notifications activées. Vous recevrez désormais les alertes des élections et de la communauté Civic.");
+        // Fire a real native push as confirmation
+        sendPush(
+          "Notifications activées",
+          "Vous recevrez désormais les alertes Civic — élections, candidatures et actualités de votre promotion.",
+          [uid],
+          { tag: "notif-activated" }
+        );
+      } catch {
+        setPushToast("Impossible d'activer les notifications.");
+      }
+    }
+  }, [notifs, uid]);
 
   const darkMode = theme === "dark";
   const LANG_LABELS: Record<string, string> = { fr: "Français", ht: "Kreyòl" };
@@ -442,7 +510,7 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
                 <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke={C.sub} strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
               <span style={{ fontSize: 14, color: C.text }}>{t("menu.notifications")}</span>
-              <div style={{ marginLeft: "auto" }} onClick={() => setNotifs(n => !n)}>
+              <div style={{ marginLeft: "auto" }} onClick={handleNotifToggle}>
                 <div style={{ width: 42, height: 24, borderRadius: 99, background: notifs ? C.gold : C.border2, position: "relative", transition: "background .2s", cursor: "pointer" }}>
                   <div style={{ position: "absolute", top: 3, left: notifs ? 21 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,.2)", transition: "left .2s" }} />
                 </div>
@@ -500,6 +568,37 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
           setPhotoSheet(false);
           e.target.value = "";
         }} />
+
+      {/* ── Push notification toast ── */}
+      {pushToast && typeof document !== "undefined" && ReactDOM.createPortal(
+        <div style={{
+          position: "fixed", bottom: 86, left: "50%", transform: "translateX(-50%)",
+          background: "rgba(0,0,0,0.82)", color: "#fff",
+          fontSize: 13, fontWeight: 500, lineHeight: 1.4,
+          padding: "11px 16px", borderRadius: 14,
+          maxWidth: "calc(100vw - 40px)",
+          display: "flex", alignItems: "flex-start", gap: 10,
+          pointerEvents: "none", zIndex: 99999,
+          animation: "fadeInUp .2s ease",
+        }}>
+          {/* Bell icon — filled when active, crossed when deactivated */}
+          {notifs ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="white" style={{ flexShrink: 0, marginTop: 1 }}>
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" strokeLinecap="round"/>
+              <circle cx="18" cy="6" r="4" fill="#0b971e"/>
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" style={{ flexShrink: 0, marginTop: 1 }}>
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" strokeLinecap="round"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" strokeLinecap="round"/>
+              <line x1="3" y1="3" x2="21" y2="21" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+            </svg>
+          )}
+          <span style={{ textAlign: "left" }}>{pushToast}</span>
+        </div>,
+        document.body
+      )}
     </>
   );
 }
