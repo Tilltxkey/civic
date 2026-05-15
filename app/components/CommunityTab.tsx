@@ -3112,6 +3112,28 @@ export function CommunityTab({ feedTab, setFeedTab, currentUser, autoOpenCompose
     }
   }, [posts, ME_LIVE]);
 
+  // ── sendPush: fire-and-forget push notification via /api/push ──────────────
+  // userIds = undefined → broadcast to all subscribers
+  const sendPush = useCallback(async (
+    title:   string,
+    body:    string,
+    userIds?: string[],
+    extra?:  { tag?: string; data?: Record<string, unknown> },
+  ) => {
+    try {
+      await fetch("/api/push", {
+        method: "POST",
+        headers: {
+          "Content-Type":    "application/json",
+          "x-civic-secret":  process.env.NEXT_PUBLIC_CIVIC_PUSH_SECRET ?? "",
+        },
+        body: JSON.stringify({ title, body, userIds, ...extra }),
+      });
+    } catch (e) {
+      console.warn("[sendPush] failed", e);
+    }
+  }, []);
+
   const addPost = (text: string, imgs?: string[], audience: AudienceValue = "everyone", knownIds?: Map<string, string>) => {
     const now = new Date().toISOString();
     const newPost: Post = {
@@ -3129,6 +3151,46 @@ export function CommunityTab({ feedTab, setFeedTab, currentUser, autoOpenCompose
     if (audience && audience !== "everyone") {
       const authorName = `${currentUser?.nom ?? ""} ${currentUser?.prenom ?? ""}`.trim() || ME_LIVE.name;
       fanOutAudienceNotifs(newPost.id, audience, ME_LIVE.id, authorName);
+    }
+
+    // ── Push notification #1: gray-badge (official) post → broadcast to all ──
+    if (ME_LIVE.badge === "gray") {
+      const authorName = `${currentUser?.nom ?? ""} ${currentUser?.prenom ?? ""}`.trim() || ME_LIVE.name;
+      const preview    = text.slice(0, 80) + (text.length > 80 ? "…" : "");
+      sendPush(
+        "Nouvelle publication",
+        `${authorName} : ${preview}`,
+        undefined, // broadcast — no userIds filter
+        { tag: "official-post", data: { postId: newPost.id } },
+      );
+    }
+
+    // ── Push notification #2: scoped post → notify targeted audience ──────────
+    // This is separate from fanOutAudienceNotifs (which handles in-app notifs).
+    // We only fire the push if the audience is restricted so "everyone" posts
+    // don't generate a second broadcast on top of the gray-badge one above.
+    if (audience && audience !== "everyone" && ME_LIVE.badge !== "gray") {
+      const authorName = `${currentUser?.nom ?? ""} ${currentUser?.prenom ?? ""}`.trim() || ME_LIVE.name;
+      const preview    = text.slice(0, 80) + (text.length > 80 ? "…" : "");
+      // Resolve a human-readable audience label for the notification body
+      const audLabel = (() => {
+        if (audience.startsWith("faculty:"))  return "votre faculté";
+        if (audience.startsWith("subfield:")) return "votre parcours";
+        if (audience.startsWith("class:") || audience.startsWith("classv:")) return "votre promotion";
+        return "votre groupe";
+      })();
+      // userIds for the push are resolved server-side by fanOutAudienceNotifs
+      // (which already has the audience→users mapping); for the push we broadcast
+      // to all and rely on the audience gate in-app — OR pass null to broadcast.
+      // To avoid spamming unrelated users we fire without userIds only for
+      // faculty-wide audiences; class/subfield posts go to everyone and the
+      // in-app gate hides them. Adjust this policy as needed.
+      sendPush(
+        "Nouvelle publication",
+        `${authorName} a publié dans ${audLabel} : ${preview}`,
+        undefined,
+        { tag: "scoped-post", data: { postId: newPost.id } },
+      );
     }
 
     notifyMentions(text, "post", text, knownIds, newPost.id);

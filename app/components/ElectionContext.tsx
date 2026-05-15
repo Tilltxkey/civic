@@ -101,6 +101,45 @@ export function isCEPRole(role: string): boolean {
 function makeId(): string {
   return Math.random().toString(36).slice(2, 12).toUpperCase();
 }
+
+// ── Push notification helper ─────────────────────────────────
+// Fire-and-forget: calls /api/push with an optional userIds list.
+// Passing userIds = undefined broadcasts to all subscribers.
+async function sendPush(
+  title:    string,
+  body:     string,
+  userIds?: string[],
+  tag?:     string,
+  data?:    Record<string, unknown>,
+): Promise<void> {
+  try {
+    await fetch("/api/push", {
+      method:  "POST",
+      headers: {
+        "Content-Type":   "application/json",
+        "x-civic-secret": process.env.NEXT_PUBLIC_CIVIC_PUSH_SECRET ?? "",
+      },
+      body: JSON.stringify({ title, body, userIds, tag, data }),
+    });
+  } catch (e) {
+    console.warn("[sendPush] failed", e);
+  }
+}
+
+// ── Fetch all user IDs belonging to an election category ─────
+// category format: "faculty|field|year|vacation"
+async function fetchCategoryUserIds(category: string): Promise<string[]> {
+  if (!supabase) return [];
+  const [fac, fld, yr, vac] = category.split("|");
+  const { data } = await supabase
+    .from("civique_users")
+    .select("id")
+    .eq("faculty",  fac)
+    .eq("field",    fld)
+    .eq("year",     parseInt(yr, 10))
+    .eq("vacation", vac);
+  return (data ?? []).map((r: { id: string }) => r.id);
+}
 // ─── CONTEXT ────────────────────────────────────────────────
 const Ctx = createContext<ElectionCtx>({
   election: null, candidates: [], myVotes: [], allVotes: [], categorySexCounts: { M: 0, F: 0 }, profilePhotos: {}, isCEP: false, loading: true,
@@ -460,6 +499,16 @@ export function ElectionProvider({
 
     await fetch();
     if (onUserRefresh) await onUserRefresh();
+
+    // Notify all users in the category that results are available
+    const resultUserIds = await fetchCategoryUserIds(el.category);
+    await sendPush(
+      "Resultats disponibles",
+      "Le scrutin est termine. Consultez les resultats de votre promotion.",
+      resultUserIds,
+      "election-results",
+      { category: el.category },
+    );
   };
 
   // ── CEP ACTION: Launch inscription phase ────────────────────
@@ -493,6 +542,16 @@ export function ElectionProvider({
       });
     }
     await fetchElection();
+
+    // Notify all users in the category that candidacies are now open
+    const inscUserIds = await fetchCategoryUserIds(category);
+    await sendPush(
+      "Candidatures ouvertes",
+      "Les inscriptions pour les elections sont maintenant ouvertes. Posez votre candidature.",
+      inscUserIds,
+      "inscription-open",
+      { category },
+    );
   }, [category, election, user, fetchElection]);
 
   // ── CEP ACTION: Launch elections ────────────────────────────
@@ -534,6 +593,18 @@ export function ElectionProvider({
       })
       .eq("id", election.id);
     await fetchElection();
+
+    // Notify all users in the category that the vote is now open
+    if (election.category) {
+      const elUserIds = await fetchCategoryUserIds(election.category);
+      await sendPush(
+        "Les elections ont commence",
+        "Le scrutin est ouvert. Votez maintenant pour vos representants.",
+        elUserIds,
+        "election-start",
+        { category: election.category },
+      );
+    }
   }, [election, candidates, fetchElection]);
 
   // ── VOTER ACTION: Submit candidacy ───────────────────────────
@@ -579,6 +650,31 @@ export function ElectionProvider({
     // update instantly if they are the one who just registered as a candidate.
 
     await fetchElection();
+
+    // Notification 1: confirm to the candidate that their registration went through
+    const postLabel = POSTS.find(p => p.id === postId)?.label ?? postId;
+    await sendPush(
+      "Candidature enregistree",
+      `Votre candidature au poste de ${postLabel} a bien ete enregistree.`,
+      [u.id],
+      "candidacy-confirmed",
+      { postId },
+    );
+
+    // Notification 2: inform all other users in the category of the new candidate
+    const allCatIds = await fetchCategoryUserIds(election.category);
+    const otherIds  = allCatIds.filter(id => id !== u.id);
+    if (otherIds.length > 0) {
+      const candidateName = `${u.prenom} ${u.nom}`.trim();
+      await sendPush(
+        "Nouveau candidat",
+        `${candidateName} vient de se porter candidat au poste de ${postLabel}.`,
+        otherIds,
+        "new-candidate",
+        { postId, candidateName },
+      );
+    }
+
     return { error: null };
   }, [election, candidates, fetchElection]);
 
