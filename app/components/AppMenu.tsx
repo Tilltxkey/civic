@@ -377,7 +377,8 @@ export function AppMenu({ user: userProp }: { user?: import("./AuthFlow").UserPr
         const padding  = "=".repeat((4 - (vapidKey.length % 4)) % 4);
         const base64   = (vapidKey + padding).replace(/-/g, "+").replace(/_/g, "/");
         const rawData  = window.atob(base64);
-        const key      = Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+        const arr      = Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+        const key      = arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength) as ArrayBuffer;
         const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
         if (uid) await savePushSubscription(uid, JSON.stringify(sub));
         setNotifs(true);
